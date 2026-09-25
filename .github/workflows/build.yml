@@ -1,0 +1,71 @@
+name: Build APK
+
+# 推送到 master（或手动触发）时自动编译并打包 APK 产物。
+#
+# 说明：
+#  - 原生库 .so 已随仓库提交（app/src/main/jniLibs），Gradle 构建并未调用 cargo，
+#    因此这里只跑 Gradle，不需要额外安装 Rust 工具链。
+#  - 未配置 keystore Secrets 时，app/build.gradle.kts 会按既定优先级回退到
+#    Android debug keystore 签名，产物可直接安装测试。
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 版本号由 git commit count 推导，需要完整历史
+          fetch-depth: 0
+          # libs/common/bsh 与 libs/common/reflekt 是子模块
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      # ubuntu-latest 镜像已预装 Android SDK 并注入 ANDROID_HOME，
+      # 缺失的 platform / build-tools 由 AGP 自行下载（见下方 sdkDownload）。
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build release APKs
+        # gradle.properties 里 android.builder.sdkDownload=false，CI 上按需放开，
+        # 让 AGP 自行补齐缺失的 build-tools 等组件。
+        run: ./gradlew assembleRelease -Pandroid.builder.sdkDownload=true --stacktrace
+
+      - name: Collect APKs
+        run: |
+          mkdir -p dist/apk
+          find app/build/outputs/apk -type f -name '*.apk' -exec cp -v {} dist/apk/ \;
+          echo "Collected APKs:"
+          ls -1 dist/apk
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: wcx-apk
+          path: dist/apk/*.apk
+          if-no-files-found: error
