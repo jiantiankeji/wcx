@@ -105,6 +105,9 @@ object WcxNotifyClient : ClickableFeature() {
     /** 卡片模板里 <weappinfo> 段落，模板字段都在这段里取值。 */
     private val WEAPP_INFO_REGEX = Regex("<weappinfo>(.*?)</weappinfo>", RegexOption.DOT_MATCHES_ALL)
 
+    /** 卡片默认封面：小程序自带的兜底图，比模板里的封面稳定。 */
+    private const val DEFAULT_CARD_THUMB_URL = "https://jzbbqoss.oss-cn-beijing.aliyuncs.com/Anonymous.jpg"
+
     private var serverUrl by prefOption("wcx_notify_server_url", "")
 
     private var notifyToken by prefOption("wcx_notify_token", "")
@@ -134,7 +137,7 @@ object WcxNotifyClient : ClickableFeature() {
     /** 详情页路径模板，{id} 会被替换为通知 ID，如 pages/post/post-detail?id={id}。 */
     private var notifyCardPagePath by prefOption("wcx_notify_card_page_path", "")
 
-    /** 卡片封面 URL，留空则沿用模板里的封面。 */
+    /** 卡片封面 URL，留空则用默认封面 [DEFAULT_CARD_THUMB_URL]。 */
     private var notifyCardThumbUrl by prefOption("wcx_notify_card_thumb_url", "")
 
     private val _status = MutableStateFlow("未连接")
@@ -449,7 +452,6 @@ object WcxNotifyClient : ClickableFeature() {
         val username: String,
         val appId: String,
         val iconUrl: String,
-        val pageThumbUrl: String,
         val shareId: String,
         val publisherId: String,
         val pkgMd5: String,
@@ -511,7 +513,7 @@ object WcxNotifyClient : ClickableFeature() {
      */
     private fun buildCardXml(card: CardPayload): String {
         val template = card.template
-        val thumbUrl = notifyCardThumbUrl.trim().ifEmpty { template.pageThumbUrl }
+        val thumbUrl = notifyCardThumbUrl.trim().ifEmpty { DEFAULT_CARD_THUMB_URL }
 
         return buildString {
             append("""<msg><appmsg appid="" sdkver="0">""")
@@ -579,7 +581,6 @@ object WcxNotifyClient : ClickableFeature() {
             username = username,
             appId = weappText("appid"),
             iconUrl = weappText("weappiconurl"),
-            pageThumbUrl = weappText("weapppagethumbrawurl"),
             shareId = weappText("shareId"),
             publisherId = tagText(xml, "publisherId"),
             pkgMd5 = weappText("md5"),
@@ -719,7 +720,7 @@ object WcxNotifyClient : ClickableFeature() {
                                 TextField(
                                     value = cardThumbUrl,
                                     onValueChange = { cardThumbUrl = it },
-                                    label = { Text("卡片封面 URL（可空，留空用模板封面）") },
+                                    label = { Text("卡片封面 URL（可空，留空用默认封面）") },
                                 )
                                 TextField(
                                     value = cardPkgMd5,
