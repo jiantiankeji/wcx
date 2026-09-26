@@ -43,6 +43,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +51,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 
 /**
@@ -376,11 +379,13 @@ object WcxNotifyClient : ClickableFeature() {
 
         val content = buildContent(message)
         val card = buildCard(message)
+        // 封面只下载一次，多个目标群复用同一份字节
+        val cardThumb = card?.let { downloadCardThumb(it.thumbUrl) }
         var successCount = 0
         var lastError: String? = null
         for (convId in targets) {
             // 卡片被微信拒绝（配置不合法、分享失败等）时回退为文本，避免通知丢失
-            val cardResult = card?.let { sendCard(convId, it) }
+            val cardResult = card?.let { sendCard(convId, it, cardThumb) }
             val result = if (cardResult is WeChatService.Result.Error) {
                 WeLogger.w(TAG, "卡片转发到 $convId 失败，回退为文本: ${cardResult.message}")
                 WeChatService.sendMessage("text", convId, content)
@@ -460,6 +465,8 @@ object WcxNotifyClient : ClickableFeature() {
         val title: String,
         val description: String,
         val pagePath: String,
+        /** 最终使用的封面 URL，用于发送前下载封面字节。 */
+        val thumbUrl: String,
         val template: CardTemplateFields,
     )
 
@@ -497,9 +504,16 @@ object WcxNotifyClient : ClickableFeature() {
             title = cardTitleOf(message),
             description = cardDescOf(message).orEmpty(),
             pagePath = pagePath,
+            thumbUrl = resolveCardThumbUrl(template),
             template = template,
         )
     }
+
+    /** 卡片封面：优先用配置值，其次用模板里的逐帖封面，最后回退到默认封面。 */
+    private fun resolveCardThumbUrl(template: CardTemplateFields): String =
+        notifyCardThumbUrl.trim()
+            .ifEmpty { template.pageThumbUrl }
+            .ifEmpty { DEFAULT_CARD_THUMB_URL }
 
     /**
      * 按模板拼出 appmsg type=33 小程序卡片报文。
@@ -512,9 +526,7 @@ object WcxNotifyClient : ClickableFeature() {
      */
     private fun buildCardXml(card: CardPayload): String {
         val template = card.template
-        val thumbUrl = notifyCardThumbUrl.trim()
-            .ifEmpty { template.pageThumbUrl }
-            .ifEmpty { DEFAULT_CARD_THUMB_URL }
+        val thumbUrl = card.thumbUrl
 
         return buildString {
             append("""<msg><appmsg appid="" sdkver="0">""")
@@ -561,9 +573,38 @@ object WcxNotifyClient : ClickableFeature() {
         }
     }
 
-    /** 走微信自己的卡片解析与发送管线（与微信内"转发卡片"同一条路径）。 */
-    private fun sendCard(convId: String, card: CardPayload): WeChatService.Result<Unit> =
-        WeChatService.sendMessage("card", convId, buildCardXml(card))
+    /**
+     * 走微信自己的卡片解析与发送管线（与微信内"转发卡片"同一条路径）。
+     *
+     * 封面字节必须一起交给发送逻辑：微信转发卡片时会先把封面图下载成字节再随消息发出，
+     * 只把 URL 写进 XML 的话接收端拿不到图，群里卡片封面会是空白。
+     */
+    private fun sendCard(convId: String, card: CardPayload, thumb: ByteArray?): WeChatService.Result<Unit> =
+        WeChatService.sendCardMessage(convId, buildCardXml(card), thumb)
+
+    /** 下载卡片封面字节，失败时返回 null（卡片照常发送，只是封面为空）。 */
+    private suspend fun downloadCardThumb(url: String): ByteArray? {
+        if (url.isBlank()) return null
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 5_000
+                connection.readTimeout = 5_000
+                connection.instanceFollowRedirects = true
+                try {
+                    val code = connection.responseCode
+                    if (code !in 200..299) error("HTTP $code")
+                    connection.inputStream.use { it.readBytes() }
+                } finally {
+                    connection.disconnect()
+                }
+            }.onSuccess {
+                WeLogger.d(TAG, "卡片封面已下载：$url（${it.size} 字节）")
+            }.onFailure {
+                WeLogger.w(TAG, "卡片封面下载失败，卡片将不带封面：$url", it)
+            }.getOrNull()
+        }
+    }
 
     /**
      * 解析「卡片模板 XML」，取出小程序身份与微信生成字段。

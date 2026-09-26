@@ -158,6 +158,16 @@ object WeChatService {
         else -> Result.Error("Unsupported type: $type")
     }
 
+    /**
+     * 发送带封面的卡片消息。
+     *
+     * [thumbData] 是封面图字节：微信正常转发卡片时会先下载封面再把字节交给发送逻辑，
+     * 只把封面 URL 写进 XML 而这里传 null 的话，接收端卡片封面会显示空白。
+     */
+    fun sendCardMessage(toUser: String, xmlContent: String, thumbData: ByteArray?): Result<Unit> =
+        if (WeMessageApi.sendXmlAppMsg(toUser, xmlContent, thumbData)) Result.Success(Unit)
+        else Result.Error("Failed to send card message")
+
     fun sendImageMessage(toUser: String, path: String): Result<Unit> =
         if (WeMessageApi.sendImage(toUser, path)) Result.Success(Unit)
         else Result.Error("Failed to send image")
