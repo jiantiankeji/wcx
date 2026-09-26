@@ -123,6 +123,14 @@ object WcxNotifyClient : ClickableFeature() {
      */
     private var notifyCardTemplate by prefOption("wcx_notify_card_template", "")
 
+    /**
+     * 卡片包信息 MD5，通常从模板里取。
+     *
+     * 这个值决定微信把卡片认成"小程序"还是"未发布的小程序·体验版"：为空时微信无法核对到
+     * 已发布版本，就会退化成体验版。模板里没有的话可以在这里手填。
+     */
+    private var notifyCardPkgMd5 by prefOption("wcx_notify_card_pkg_md5", "")
+
     /** 详情页路径模板，{id} 会被替换为通知 ID，如 pages/post/post-detail?id={id}。 */
     private var notifyCardPagePath by prefOption("wcx_notify_card_page_path", "")
 
@@ -452,6 +460,7 @@ object WcxNotifyClient : ClickableFeature() {
         val title: String,
         val description: String,
         val pagePath: String,
+        val pkgMd5: String,
         val template: CardTemplateFields,
     )
 
@@ -475,10 +484,21 @@ object WcxNotifyClient : ClickableFeature() {
             return null
         }
 
+        val pkgMd5 = notifyCardPkgMd5.trim().ifEmpty { template.pkgMd5 }
+        WeLogger.d(
+            TAG,
+            "卡片模板解析：username=${template.username} appid=${template.appId} " +
+                "icon=${template.iconUrl.isNotEmpty()} shareId=${template.shareId.isNotEmpty()} pkgMd5=$pkgMd5",
+        )
+        if (pkgMd5.isEmpty()) {
+            WeLogger.w(TAG, "卡片包信息 MD5 为空，微信会判定为「未发布的小程序·体验版」")
+        }
+
         return CardPayload(
             title = cardTitleOf(message),
             description = cardDescOf(message).orEmpty(),
             pagePath = pagePath,
+            pkgMd5 = pkgMd5,
             template = template,
         )
     }
@@ -520,7 +540,7 @@ object WcxNotifyClient : ClickableFeature() {
             if (template.shareId.isNotEmpty()) {
                 append("<shareId>").append(cdata(template.shareId)).append("</shareId>")
             }
-            append("<pkginfo><type>2</type><md5>").append(xmlEscape(template.pkgMd5)).append("</md5></pkginfo>")
+            append("<pkginfo><type>2</type><md5>").append(xmlEscape(card.pkgMd5)).append("</md5></pkginfo>")
             append("<appservicetype>0</appservicetype>")
             append("</weappinfo>")
             if (template.publisherId.isNotEmpty()) {
@@ -544,21 +564,25 @@ object WcxNotifyClient : ClickableFeature() {
         val xml = template.trim()
         if (xml.isEmpty()) return null
 
-        val weapp = WEAPP_INFO_REGEX.find(xml)?.groupValues?.get(1) ?: xml
+        // 只在 <weappinfo> 段落里取字段：全文里还散落着同名的空标签（如顶层 <md5></md5>），
+        // 混在一起会取到空值
+        val weapp = WEAPP_INFO_REGEX.find(xml)?.groupValues?.get(1).orEmpty()
+        fun weappText(tag: String) = if (weapp.isEmpty()) "" else tagText(weapp, tag)
+
         val sourceUsername = tagText(xml, "sourceusername")
-        val username = tagText(weapp, "username").ifEmpty { sourceUsername }
+        val username = weappText("username").ifEmpty { sourceUsername }
         if (username.isEmpty()) return null
 
         return CardTemplateFields(
             sourceUsername = sourceUsername.ifEmpty { username },
             sourceDisplayName = tagText(xml, "sourcedisplayname"),
             username = username,
-            appId = tagText(weapp, "appid"),
-            iconUrl = tagText(weapp, "weappiconurl"),
-            pageThumbUrl = tagText(weapp, "weapppagethumbrawurl"),
-            shareId = tagText(weapp, "shareId"),
+            appId = weappText("appid"),
+            iconUrl = weappText("weappiconurl"),
+            pageThumbUrl = weappText("weapppagethumbrawurl"),
+            shareId = weappText("shareId"),
             publisherId = tagText(xml, "publisherId"),
-            pkgMd5 = tagText(weapp, "md5"),
+            pkgMd5 = weappText("md5"),
         )
     }
 
@@ -612,6 +636,7 @@ object WcxNotifyClient : ClickableFeature() {
             var cardEnabled by remember { mutableStateOf(notifyCardEnabled) }
             var cardPagePath by remember { mutableStateOf(notifyCardPagePath) }
             var cardThumbUrl by remember { mutableStateOf(notifyCardThumbUrl) }
+            var cardPkgMd5 by remember { mutableStateOf(notifyCardPkgMd5) }
             var cardTemplate by remember { mutableStateOf(notifyCardTemplate) }
             val currentStatus by status.collectAsState()
             val dialogScope = rememberCoroutineScope()
@@ -697,6 +722,11 @@ object WcxNotifyClient : ClickableFeature() {
                                     label = { Text("卡片封面 URL（可空，留空用模板封面）") },
                                 )
                                 TextField(
+                                    value = cardPkgMd5,
+                                    onValueChange = { cardPkgMd5 = it },
+                                    label = { Text("包信息 MD5（可空，留空用模板里的）") },
+                                )
+                                TextField(
                                     value = cardTemplate,
                                     onValueChange = { cardTemplate = it },
                                     label = { Text("卡片模板 XML（粘贴一条可正常打开的小程序卡片报文）") },
@@ -716,6 +746,7 @@ object WcxNotifyClient : ClickableFeature() {
                             notifyCardTemplate = cardTemplate.trim()
                             notifyCardPagePath = cardPagePath.trim()
                             notifyCardThumbUrl = cardThumbUrl.trim()
+                            notifyCardPkgMd5 = cardPkgMd5.trim()
                             restart()
                             onDismiss()
                         }) { Text("保存并重连") }
