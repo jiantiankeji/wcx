@@ -1,10 +1,8 @@
 package com.Johnny.wcx.features.items.system.servers
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -52,9 +50,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import java.io.ByteArrayOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 
 /**
@@ -72,10 +67,12 @@ import java.net.URLEncoder
  *   收到后先在手机本地弹出 Toast 提示，再转发到微信群里；转发目标以本地配置的群聊为准（可多选），
  *   本地未配置任何群时才回退到服务端下发的 convId。
  *   其中 cardTitle / cardDesc 是服务端过滤后的群文案（不含用户ID），群内展示以它为准。
- * - 开启「以小程序卡片转发」后走微信官方分享通道（WXMiniProgramObject）：由微信自行补齐小程序
- *   logo、名称、来源账号与包信息，避免手写 appmsg XML 时卡片退化成"未发布的小程序·体验版"。
- *   页面路径优先取服务端下发的 path，缺省时用本地配置的路径模板（{id} 占位通知 ID），
- *   点击卡片直接打开小程序详情页；卡片发送失败时自动回退为文本转发，避免通知丢失。
+ * - 开启「以小程序卡片转发」后发送 appmsg type=33 小程序卡片，走微信自己的卡片解析与发送管线
+ *   （AppMsgContent.parseXml + AppMsgLogic.sendAppMsg，与微信内"转发卡片"是同一条路径）。
+ *   卡片里的 weappiconurl / pkginfo.md5 / shareId / sourceusername 只能由微信生成，因此需要把一条
+ *   真实可打开的小程序卡片 XML 粘贴到「卡片模板 XML」，由它补齐这些字段；标题、描述、页面路径
+ *   按每条通知替换。页面路径优先取服务端下发的 path，缺省时用本地配置的路径模板（{id} 占位通知 ID）。
+ *   卡片发送失败（模板缺失、XML 被拒绝等）时自动回退为文本转发，避免通知丢失。
  */
 @Feature(
     name = "服务器通知转发",
@@ -105,14 +102,8 @@ object WcxNotifyClient : ClickableFeature() {
     /** 卡片详情页路径中的通知 ID 占位符。 */
     private const val CARD_PAGE_ID_PLACEHOLDER = "{id}"
 
-    /** 微信 WXMediaMessage.thumbData 上限 32KB，超出会导致分享被微信拒绝。 */
-    private const val CARD_THUMB_MAX_BYTES = 32 * 1024
-
-    /** 卡片封面最大边长（卡片按小图展示，无需原图分辨率）。 */
-    private const val CARD_THUMB_MAX_EDGE = 300
-
-    /** 卡片封面下载超时。 */
-    private const val CARD_THUMB_TIMEOUT_MS = 5_000
+    /** 卡片模板里 <weappinfo> 段落，模板字段都在这段里取值。 */
+    private val WEAPP_INFO_REGEX = Regex("<weappinfo>(.*?)</weappinfo>", RegexOption.DOT_MATCHES_ALL)
 
     private var serverUrl by prefOption("wcx_notify_server_url", "")
 
@@ -124,13 +115,18 @@ object WcxNotifyClient : ClickableFeature() {
     /** 是否以小程序卡片（appmsg type=33）形式转发通知，关闭时转发纯文本。 */
     private var notifyCardEnabled by prefOption("wcx_notify_card_enabled", false)
 
-    /** 卡片所属小程序原始 ID（username，形如 gh_xxx@app）。 */
-    private var notifyCardUsername by prefOption("wcx_notify_card_username", "")
+    /**
+     * 卡片模板 XML：一条真实可打开的小程序卡片报文。
+     *
+     * weappiconurl / pkginfo.md5 / shareId / sourceusername / appid 这些字段由微信生成，
+     * 手写不出来，只能从一条真实卡片里复用，否则卡片会退化成"未发布的小程序·体验版"或加载超时。
+     */
+    private var notifyCardTemplate by prefOption("wcx_notify_card_template", "")
 
     /** 详情页路径模板，{id} 会被替换为通知 ID，如 pages/post/post-detail?id={id}。 */
     private var notifyCardPagePath by prefOption("wcx_notify_card_page_path", "")
 
-    /** 卡片缩略图 URL，留空则使用小程序默认封面。 */
+    /** 卡片封面 URL，留空则沿用模板里的封面。 */
     private var notifyCardThumbUrl by prefOption("wcx_notify_card_thumb_url", "")
 
     private val _status = MutableStateFlow("未连接")
@@ -438,134 +434,151 @@ object WcxNotifyClient : ClickableFeature() {
     // 小程序卡片转发
     // -------------------------------------------------------------------------
 
-    /** 一次小程序分享所需的入参。 */
+    /** 从「卡片模板 XML」提取出的微信字段：只能由微信生成，必须原样复用。 */
+    private data class CardTemplateFields(
+        val sourceUsername: String,
+        val sourceDisplayName: String,
+        val username: String,
+        val appId: String,
+        val iconUrl: String,
+        val pageThumbUrl: String,
+        val shareId: String,
+        val publisherId: String,
+        val pkgMd5: String,
+    )
+
+    /** 一次小程序卡片转发所需的入参。 */
     private data class CardPayload(
         val title: String,
         val description: String,
-        val username: String,
-        val path: String,
-        val thumbBase64: String?,
+        val pagePath: String,
+        val template: CardTemplateFields,
     )
 
     /**
      * 准备转发用的小程序卡片参数。
      *
-     * 未开启卡片转发或配置不完整（缺少小程序原始 ID / 页面路径）时返回 null，由调用方回退为文本转发。
+     * 未开启卡片转发、页面路径为空或模板解析不出小程序身份时返回 null，由调用方回退为文本转发。
      */
-    private suspend fun buildCard(message: NotifyMessage): CardPayload? {
+    private fun buildCard(message: NotifyMessage): CardPayload? {
         if (!notifyCardEnabled) return null
 
-        val username = notifyCardUsername.trim()
         val pagePath = resolveCardPagePath(message)
-        if (username.isEmpty() || pagePath.isEmpty()) {
-            WeLogger.w(TAG, "已开启卡片转发但小程序信息配置不完整，回退为文本转发")
+        if (pagePath.isEmpty()) {
+            WeLogger.w(TAG, "已开启卡片转发但详情页路径为空，回退为文本转发")
+            return null
+        }
+
+        val template = parseCardTemplate(notifyCardTemplate)
+        if (template == null) {
+            WeLogger.w(TAG, "「卡片模板 XML」为空或缺少小程序身份信息，回退为文本转发")
             return null
         }
 
         return CardPayload(
             title = cardTitleOf(message),
             description = cardDescOf(message).orEmpty(),
-            username = username,
-            path = pagePath,
-            thumbBase64 = loadCardThumbBase64(),
+            pagePath = pagePath,
+            template = template,
         )
     }
 
     /**
-     * 通过微信官方分享通道发送小程序卡片。
+     * 按模板拼出 appmsg type=33 小程序卡片报文。
      *
-     * 相比手写 appmsg XML，官方通道由微信补齐 weappiconurl / shareId / pkginfo / 来源账号等字段，
-     * 卡片才能带上小程序 logo、名称与"小程序"标签；appId 传空串（小程序身份由 username 决定）。
+     * 只替换标题、描述、页面路径与封面，图标、包信息、来源账号、shareId 全部沿用模板，
+     * 微信才能把卡片识别成正式版小程序卡片，而不是"未发布的小程序·体验版"。
      */
+    private fun buildCardXml(card: CardPayload): String {
+        val template = card.template
+        val thumbUrl = notifyCardThumbUrl.trim().ifEmpty { template.pageThumbUrl }
+
+        return buildString {
+            append("""<msg><appmsg appid="" sdkver="0">""")
+            append("<title>").append(xmlEscape(card.title)).append("</title>")
+            append("<des>").append(xmlEscape(card.description)).append("</des>")
+            append("<action>view</action>")
+            append("<type>33</type>")
+            append("<showtype>0</showtype>")
+            append("<sourceusername>").append(xmlEscape(template.sourceUsername)).append("</sourceusername>")
+            if (template.sourceDisplayName.isNotEmpty()) {
+                append("<sourcedisplayname>").append(xmlEscape(template.sourceDisplayName))
+                    .append("</sourcedisplayname>")
+            }
+            append("<weappinfo>")
+            append("<pagepath>").append(cdata(card.pagePath)).append("</pagepath>")
+            append("<username>").append(xmlEscape(template.username)).append("</username>")
+            append("<appid>").append(xmlEscape(template.appId)).append("</appid>")
+            // type=2 表示正式版
+            append("<type>2</type>")
+            if (template.iconUrl.isNotEmpty()) {
+                append("<weappiconurl>").append(cdata(template.iconUrl)).append("</weappiconurl>")
+            }
+            if (thumbUrl.isNotEmpty()) {
+                append("<weapppagethumbrawurl>").append(cdata(thumbUrl)).append("</weapppagethumbrawurl>")
+            }
+            if (template.shareId.isNotEmpty()) {
+                append("<shareId>").append(cdata(template.shareId)).append("</shareId>")
+            }
+            append("<pkginfo><type>2</type><md5>").append(xmlEscape(template.pkgMd5)).append("</md5></pkginfo>")
+            append("<appservicetype>0</appservicetype>")
+            append("</weappinfo>")
+            if (template.publisherId.isNotEmpty()) {
+                append("<webviewshared><publisherId>").append(xmlEscape(template.publisherId))
+                    .append("</publisherId></webviewshared>")
+            }
+            append("</appmsg></msg>")
+        }
+    }
+
+    /** 走微信自己的卡片解析与发送管线（与微信内"转发卡片"同一条路径）。 */
     private fun sendCard(convId: String, card: CardPayload): WeChatService.Result<Unit> =
-        WeChatService.shareMiniProgram(
-            toUser = convId,
-            title = card.title,
-            description = card.description,
-            username = card.username,
-            path = card.path,
-            thumbDataBase64 = card.thumbBase64,
-            appId = "",
-        )
+        WeChatService.sendMessage("card", convId, buildCardXml(card))
 
     /**
-     * 下载并压缩本地配置的卡片封面。
+     * 解析「卡片模板 XML」，取出小程序身份与包信息。
      *
-     * 微信对 thumbData 有 32KB 的硬限制，超限会让整条卡片被拒绝发送，因此先按边长缩小再逐级降质；
-     * 仍压不进限制内（或未配置/下载失败）时返回 null，由微信使用小程序默认封面。
+     * 模板可以是完整报文，也可以只有一段 <weappinfo>；解析不出 username 时返回 null。
      */
-    private fun loadCardThumbBase64(): String? {
-        val url = notifyCardThumbUrl.trim()
-        if (url.isEmpty()) return null
-        return try {
-            val bytes = (URL(url).openConnection() as HttpURLConnection).run {
-                connectTimeout = CARD_THUMB_TIMEOUT_MS
-                readTimeout = CARD_THUMB_TIMEOUT_MS
-                try {
-                    inputStream.use { it.readBytes() }
-                } finally {
-                    disconnect()
-                }
-            }
-            compressCardThumb(bytes)?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
-        } catch (e: Exception) {
-            WeLogger.w(TAG, "下载卡片封面失败，改用小程序默认封面: ${e.message}")
-            null
-        }
+    private fun parseCardTemplate(template: String): CardTemplateFields? {
+        val xml = template.trim()
+        if (xml.isEmpty()) return null
+
+        val weapp = WEAPP_INFO_REGEX.find(xml)?.groupValues?.get(1) ?: xml
+        val sourceUsername = tagText(xml, "sourceusername")
+        val username = tagText(weapp, "username").ifEmpty { sourceUsername }
+        if (username.isEmpty()) return null
+
+        return CardTemplateFields(
+            sourceUsername = sourceUsername.ifEmpty { username },
+            sourceDisplayName = tagText(xml, "sourcedisplayname"),
+            username = username,
+            appId = tagText(weapp, "appid"),
+            iconUrl = tagText(weapp, "weappiconurl"),
+            pageThumbUrl = tagText(weapp, "weapppagethumbrawurl"),
+            shareId = tagText(weapp, "shareId"),
+            publisherId = tagText(xml, "publisherId"),
+            pkgMd5 = tagText(weapp, "md5"),
+        )
     }
 
-    /** 将封面压缩到微信允许的体积；无法压到限制内时返回 null。 */
-    private fun compressCardThumb(bytes: ByteArray): ByteArray? {
-        if (bytes.size <= CARD_THUMB_MAX_BYTES) return bytes
+    /** 读取标签文本，兼容 <![CDATA[...]]> 包裹与带属性的标签。 */
+    private fun tagText(xml: String, tag: String): String =
+        Regex("<$tag(?:\\s[^>]*)?>(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?</$tag>", RegexOption.DOT_MATCHES_ALL)
+            .find(xml)
+            ?.groupValues?.get(1)
+            ?.trim()
+            .orEmpty()
 
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    private fun xmlEscape(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
 
-        var sample = 1
-        while (bounds.outWidth / (sample * 2) >= CARD_THUMB_MAX_EDGE
-            && bounds.outHeight / (sample * 2) >= CARD_THUMB_MAX_EDGE
-        ) {
-            sample *= 2
-        }
-        val bitmap = BitmapFactory.decodeByteArray(
-            bytes, 0, bytes.size,
-            BitmapFactory.Options().apply { inSampleSize = sample },
-        ) ?: return null
-
-        return try {
-            val longEdge = maxOf(bitmap.width, bitmap.height)
-            val scaled = if (longEdge > CARD_THUMB_MAX_EDGE) {
-                val ratio = CARD_THUMB_MAX_EDGE.toFloat() / longEdge
-                Bitmap.createScaledBitmap(
-                    bitmap,
-                    (bitmap.width * ratio).toInt().coerceAtLeast(1),
-                    (bitmap.height * ratio).toInt().coerceAtLeast(1),
-                    true,
-                )
-            } else {
-                bitmap
-            }
-
-            var quality = 85
-            var compressed: ByteArray
-            do {
-                val stream = ByteArrayOutputStream()
-                scaled.compress(Bitmap.CompressFormat.JPEG, quality, stream)
-                compressed = stream.toByteArray()
-                quality -= 15
-            } while (compressed.size > CARD_THUMB_MAX_BYTES && quality > 20)
-
-            if (compressed.size > CARD_THUMB_MAX_BYTES) {
-                WeLogger.w(TAG, "卡片封面压缩后仍超过 ${CARD_THUMB_MAX_BYTES / 1024}KB，改用小程序默认封面")
-                null
-            } else {
-                compressed
-            }
-        } finally {
-            bitmap.recycle()
-        }
-    }
+    /** CDATA 包裹，内部若含 ]]> 需先转义，否则会截断 XML。 */
+    private fun cdata(text: String): String = "<![CDATA[" + text.replace("]]>", "]]&gt;") + "]]>"
 
     /** 卡片页面路径：优先用服务端下发的 path，其次用本地模板并替换 {id} 占位符。 */
     private fun resolveCardPagePath(message: NotifyMessage): String {
@@ -597,9 +610,9 @@ object WcxNotifyClient : ClickableFeature() {
             var checking by remember { mutableStateOf(false) }
             var checkResult by remember { mutableStateOf<String?>(null) }
             var cardEnabled by remember { mutableStateOf(notifyCardEnabled) }
-            var cardUsername by remember { mutableStateOf(notifyCardUsername) }
             var cardPagePath by remember { mutableStateOf(notifyCardPagePath) }
             var cardThumbUrl by remember { mutableStateOf(notifyCardThumbUrl) }
+            var cardTemplate by remember { mutableStateOf(notifyCardTemplate) }
             val currentStatus by status.collectAsState()
             val dialogScope = rememberCoroutineScope()
 
@@ -674,11 +687,6 @@ object WcxNotifyClient : ClickableFeature() {
                             )
                             if (cardEnabled) {
                                 TextField(
-                                    value = cardUsername,
-                                    onValueChange = { cardUsername = it },
-                                    label = { Text("小程序原始 ID，如 gh_xxx@app") },
-                                )
-                                TextField(
                                     value = cardPagePath,
                                     onValueChange = { cardPagePath = it },
                                     label = { Text("详情页路径，{id} 占位通知 ID") },
@@ -686,7 +694,14 @@ object WcxNotifyClient : ClickableFeature() {
                                 TextField(
                                     value = cardThumbUrl,
                                     onValueChange = { cardThumbUrl = it },
-                                    label = { Text("卡片封面 URL（可空）") },
+                                    label = { Text("卡片封面 URL（可空，留空用模板封面）") },
+                                )
+                                TextField(
+                                    value = cardTemplate,
+                                    onValueChange = { cardTemplate = it },
+                                    label = { Text("卡片模板 XML（粘贴一条可正常打开的小程序卡片报文）") },
+                                    maxLines = 6,
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
                             }
                         }
@@ -698,7 +713,7 @@ object WcxNotifyClient : ClickableFeature() {
                             notifyToken = tokenInput.trim()
                             notifyGroupIds = localGroupIds
                             notifyCardEnabled = cardEnabled
-                            notifyCardUsername = cardUsername.trim()
+                            notifyCardTemplate = cardTemplate.trim()
                             notifyCardPagePath = cardPagePath.trim()
                             notifyCardThumbUrl = cardThumbUrl.trim()
                             restart()
