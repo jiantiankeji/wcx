@@ -49,6 +49,7 @@ import com.Johnny.wcx.preferences.WePrefs.Companion.prefOption
 import com.Johnny.wcx.ui.content.AlertDialogContent
 import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.DefaultColumn
+import com.Johnny.wcx.ui.content.GroupSelectorScreen
 import com.Johnny.wcx.ui.content.TextButton
 import com.Johnny.wcx.ui.utils.showComposeDialog
 import com.Johnny.wcx.utils.WeLogger
@@ -173,8 +174,9 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
 
             if (showGroupSelector) {
                 GroupSelectorScreen(
+                    description = if (localUseWhitelist) "选择需要开启 AI 自动回复的群聊" else "选择需要排除 AI 自动回复的群聊",
+                    initialSelected = enabledGroups,
                     onDismiss = { showGroupSelector = false },
-                    useWhitelist = localUseWhitelist,
                     onSave = { groups ->
                         enabledGroups = groups
                         showToast("已保存 ${groups.size} 个群聊")
@@ -434,64 +436,6 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
             }
         }
     }
-
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    private fun GroupSelectorScreen(
-        onDismiss: () -> Unit,
-        useWhitelist: Boolean,
-        onSave: (Set<String>) -> Unit
-    ) {
-        val groups = remember {
-            WeDatabaseApi.getGroups().filter { it.wxId.isNotBlank() }
-        }
-        val selected = remember { enabledGroups.toMutableSet() }
-        val listState = rememberLazyListState()
-
-        AlertDialogContent(
-            title = { Text("选择群聊") },
-            text = {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.heightIn(max = 400.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    item {
-                        Text(
-                            if (useWhitelist) "选择需要开启 AI 自动回复的群聊" else "选择需要排除 AI 自动回复的群聊",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
-                    items(groups, key = { it.wxId }) { group ->
-                        val isSelected = remember { mutableStateOf(selected.contains(group.wxId)) }
-                        ListItem(
-                            modifier = Modifier.clickable {
-                                isSelected.value = !isSelected.value
-                                if (isSelected.value) {
-                                    selected.add(group.wxId)
-                                } else {
-                                    selected.remove(group.wxId)
-                                }
-                            },
-                            headlineContent = { Text(group.displayName) },
-                            supportingContent = { Text(group.wxId) },
-                            trailingContent = {
-                                Text(if (isSelected.value) "✓" else "")
-                            }
-                        )
-                    }
-                }
-            },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-            confirmButton = {
-                Button(onClick = {
-                    onSave(selected)
-                    onDismiss()
-                }) { Text("保存") }
-            }
-        )}
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable

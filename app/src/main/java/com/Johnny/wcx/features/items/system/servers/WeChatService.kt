@@ -151,6 +151,10 @@ object WeChatService {
         "text" -> if (WeMessageApi.sendText(convId, content)) Result.Success(Unit)
         else Result.Error("Failed to send message")
 
+        // 卡片消息：content 为完整的 appmsg XML（type=33 小程序卡片、type=5 链接卡片等）
+        "card" -> if (WeMessageApi.sendXmlAppMsg(convId, content)) Result.Success(Unit)
+        else Result.Error("Failed to send card message")
+
         else -> Result.Error("Unsupported type: $type")
     }
 
