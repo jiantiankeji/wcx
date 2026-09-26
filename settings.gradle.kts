@@ -21,7 +21,15 @@ dependencyResolutionManagement {
                 includeGroup("com.github.topjohnwu.libsu")
             }
         }
-        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
+        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/") {
+            // 与上面 jitpack 同理：腾讯镜像未做 content 过滤，会“认领”所有 group。
+            // 它代理得到 com.tencent:mmkv 的 POM，却给不出对应 AAR，
+            // 一旦命中就不会回退到 mavenCentral，导致解析报
+            // "Could not find mmkv-x.y.z.jar"。这里直接把 com.tencent 交给 mavenCentral。
+            content {
+                excludeGroup("com.tencent")
+            }
+        }
         maven("https://api.xposed.info/") {
             content {
                 includeGroup("de.robv.android.xposed")
