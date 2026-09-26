@@ -69,7 +69,7 @@ import java.net.URLEncoder
  *   其中 cardTitle / cardDesc 是服务端过滤后的群文案（不含用户ID），群内展示以它为准。
  * - 开启「以小程序卡片转发」后发送 appmsg type=33 小程序卡片，走微信自己的卡片解析与发送管线
  *   （AppMsgContent.parseXml + AppMsgLogic.sendAppMsg，与微信内"转发卡片"是同一条路径）。
- *   卡片里的 weappiconurl / pkginfo.md5 / shareId / sourceusername 只能由微信生成，因此需要把一条
+ *   卡片里的 weappiconurl / version / shareId / sourceusername 只能由微信生成，因此需要把一条
  *   真实可打开的小程序卡片 XML 粘贴到「卡片模板 XML」，由它补齐这些字段；标题、描述、页面路径
  *   按每条通知替换。页面路径优先取服务端下发的 path，缺省时用本地配置的路径模板（{id} 占位通知 ID）。
  *   卡片发送失败（模板缺失、XML 被拒绝等）时自动回退为文本转发，避免通知丢失。
@@ -105,8 +105,9 @@ object WcxNotifyClient : ClickableFeature() {
     /** 卡片模板里 <weappinfo> 段落，模板字段都在这段里取值。 */
     private val WEAPP_INFO_REGEX = Regex("<weappinfo>(.*?)</weappinfo>", RegexOption.DOT_MATCHES_ALL)
 
-    /** 卡片默认封面：小程序自带的兜底图，比模板里的封面稳定。 */
-    private const val DEFAULT_CARD_THUMB_URL = "https://jzbbqoss.oss-cn-beijing.aliyuncs.com/Anonymous.jpg"
+    /** 卡片默认封面：官方卡片实测可正常加载的那张图。 */
+    private const val DEFAULT_CARD_THUMB_URL =
+        "https://jzbbqoss.oss-cn-beijing.aliyuncs.com/common/4e4f32974b92406ab9152d150d95da6d.jpeg"
 
     private var serverUrl by prefOption("wcx_notify_server_url", "")
 
@@ -121,23 +122,16 @@ object WcxNotifyClient : ClickableFeature() {
     /**
      * 卡片模板 XML：一条真实可打开的小程序卡片报文。
      *
-     * weappiconurl / pkginfo.md5 / shareId / sourceusername / appid 这些字段由微信生成，
-     * 手写不出来，只能从一条真实卡片里复用，否则卡片会退化成"未发布的小程序·体验版"或加载超时。
+     * weappiconurl / version / shareId / sourceusername / appid 这些字段由微信生成，手写不出来，
+     * 只能从一条真实卡片里复用。其中 <version> 是微信判断"已发布版本"的依据，缺失就会退化成
+     * "未发布的小程序·体验版"，因此模板必须是近期真实分享出来的卡片，不能是历史留存的老报文。
      */
     private var notifyCardTemplate by prefOption("wcx_notify_card_template", "")
-
-    /**
-     * 卡片包信息 MD5，通常从模板里取。
-     *
-     * 这个值决定微信把卡片认成"小程序"还是"未发布的小程序·体验版"：为空时微信无法核对到
-     * 已发布版本，就会退化成体验版。模板里没有的话可以在这里手填。
-     */
-    private var notifyCardPkgMd5 by prefOption("wcx_notify_card_pkg_md5", "")
 
     /** 详情页路径模板，{id} 会被替换为通知 ID，如 pages/post/post-detail?id={id}。 */
     private var notifyCardPagePath by prefOption("wcx_notify_card_page_path", "")
 
-    /** 卡片封面 URL，留空则用默认封面 [DEFAULT_CARD_THUMB_URL]。 */
+    /** 卡片封面 URL，留空则用模板里的封面，模板也没有时用 [DEFAULT_CARD_THUMB_URL]。 */
     private var notifyCardThumbUrl by prefOption("wcx_notify_card_thumb_url", "")
 
     private val _status = MutableStateFlow("未连接")
@@ -451,10 +445,14 @@ object WcxNotifyClient : ClickableFeature() {
         val sourceDisplayName: String,
         val username: String,
         val appId: String,
+        /** 小程序已发布版本号：缺失时微信会把卡片降级成"未发布的小程序·体验版"。 */
+        val version: String,
         val iconUrl: String,
+        val pageThumbUrl: String,
         val shareId: String,
         val publisherId: String,
-        val pkgMd5: String,
+        /** 模板里微信生成的兜底跳转地址，仅在客户端无法直接拉起小程序时使用。 */
+        val fallbackUrl: String,
     )
 
     /** 一次小程序卡片转发所需的入参。 */
@@ -462,7 +460,6 @@ object WcxNotifyClient : ClickableFeature() {
         val title: String,
         val description: String,
         val pagePath: String,
-        val pkgMd5: String,
         val template: CardTemplateFields,
     )
 
@@ -486,21 +483,20 @@ object WcxNotifyClient : ClickableFeature() {
             return null
         }
 
-        val pkgMd5 = notifyCardPkgMd5.trim().ifEmpty { template.pkgMd5 }
         WeLogger.d(
             TAG,
             "卡片模板解析：username=${template.username} appid=${template.appId} " +
-                "icon=${template.iconUrl.isNotEmpty()} shareId=${template.shareId.isNotEmpty()} pkgMd5=$pkgMd5",
+                "version=${template.version} icon=${template.iconUrl.isNotEmpty()} " +
+                "thumb=${template.pageThumbUrl.isNotEmpty()} shareId=${template.shareId.isNotEmpty()}",
         )
-        if (pkgMd5.isEmpty()) {
-            WeLogger.w(TAG, "卡片包信息 MD5 为空，微信会判定为「未发布的小程序·体验版」")
+        if (template.version.isEmpty()) {
+            WeLogger.w(TAG, "卡片模板缺少 <version>，微信会判定为「未发布的小程序·体验版」，请重新分享一条卡片")
         }
 
         return CardPayload(
             title = cardTitleOf(message),
             description = cardDescOf(message).orEmpty(),
             pagePath = pagePath,
-            pkgMd5 = pkgMd5,
             template = template,
         )
     }
@@ -508,12 +504,17 @@ object WcxNotifyClient : ClickableFeature() {
     /**
      * 按模板拼出 appmsg type=33 小程序卡片报文。
      *
-     * 只替换标题、描述、页面路径与封面，图标、包信息、来源账号、shareId 全部沿用模板，
-     * 微信才能把卡片识别成正式版小程序卡片，而不是"未发布的小程序·体验版"。
+     * 只替换标题、描述、页面路径与封面，图标、版本号、来源账号、shareId 全部沿用模板，
+     * 微信才能把卡片识别成已发布的小程序，而不是"未发布的小程序·体验版"。
+     *
+     * 模板里的 pkginfo 不再透传：官方正常显示的卡片根本没有这个节点，而 md5 为空的 pkginfo
+     * 反而会让微信按"未发布版本"渲染。
      */
     private fun buildCardXml(card: CardPayload): String {
         val template = card.template
-        val thumbUrl = notifyCardThumbUrl.trim().ifEmpty { DEFAULT_CARD_THUMB_URL }
+        val thumbUrl = notifyCardThumbUrl.trim()
+            .ifEmpty { template.pageThumbUrl }
+            .ifEmpty { DEFAULT_CARD_THUMB_URL }
 
         return buildString {
             append("""<msg><appmsg appid="" sdkver="0">""")
@@ -522,6 +523,10 @@ object WcxNotifyClient : ClickableFeature() {
             append("<action>view</action>")
             append("<type>33</type>")
             append("<showtype>0</showtype>")
+            if (template.fallbackUrl.isNotEmpty()) {
+                // 模板里的 url 本身就是合法 XML 文本（& 已写成 &amp;），原样透传，避免二次转义
+                append("<url>").append(template.fallbackUrl).append("</url>")
+            }
             append("<sourceusername>").append(xmlEscape(template.sourceUsername)).append("</sourceusername>")
             if (template.sourceDisplayName.isNotEmpty()) {
                 append("<sourcedisplayname>").append(xmlEscape(template.sourceDisplayName))
@@ -531,6 +536,10 @@ object WcxNotifyClient : ClickableFeature() {
             append("<pagepath>").append(cdata(card.pagePath)).append("</pagepath>")
             append("<username>").append(xmlEscape(template.username)).append("</username>")
             append("<appid>").append(xmlEscape(template.appId)).append("</appid>")
+            // 版本号必须紧跟 appid，微信据此核对到已发布版本，缺失就退化成体验版
+            if (template.version.isNotEmpty()) {
+                append("<version>").append(xmlEscape(template.version)).append("</version>")
+            }
             // type=2 表示正式版
             append("<type>2</type>")
             if (template.iconUrl.isNotEmpty()) {
@@ -542,7 +551,6 @@ object WcxNotifyClient : ClickableFeature() {
             if (template.shareId.isNotEmpty()) {
                 append("<shareId>").append(cdata(template.shareId)).append("</shareId>")
             }
-            append("<pkginfo><type>2</type><md5>").append(xmlEscape(card.pkgMd5)).append("</md5></pkginfo>")
             append("<appservicetype>0</appservicetype>")
             append("</weappinfo>")
             if (template.publisherId.isNotEmpty()) {
@@ -558,7 +566,7 @@ object WcxNotifyClient : ClickableFeature() {
         WeChatService.sendMessage("card", convId, buildCardXml(card))
 
     /**
-     * 解析「卡片模板 XML」，取出小程序身份与包信息。
+     * 解析「卡片模板 XML」，取出小程序身份与微信生成字段。
      *
      * 模板可以是完整报文，也可以只有一段 <weappinfo>；解析不出 username 时返回 null。
      */
@@ -580,10 +588,12 @@ object WcxNotifyClient : ClickableFeature() {
             sourceDisplayName = tagText(xml, "sourcedisplayname"),
             username = username,
             appId = weappText("appid"),
+            version = weappText("version"),
             iconUrl = weappText("weappiconurl"),
+            pageThumbUrl = weappText("weapppagethumbrawurl"),
             shareId = weappText("shareId"),
             publisherId = tagText(xml, "publisherId"),
-            pkgMd5 = weappText("md5"),
+            fallbackUrl = tagText(xml, "url"),
         )
     }
 
@@ -637,7 +647,6 @@ object WcxNotifyClient : ClickableFeature() {
             var cardEnabled by remember { mutableStateOf(notifyCardEnabled) }
             var cardPagePath by remember { mutableStateOf(notifyCardPagePath) }
             var cardThumbUrl by remember { mutableStateOf(notifyCardThumbUrl) }
-            var cardPkgMd5 by remember { mutableStateOf(notifyCardPkgMd5) }
             var cardTemplate by remember { mutableStateOf(notifyCardTemplate) }
             val currentStatus by status.collectAsState()
             val dialogScope = rememberCoroutineScope()
@@ -720,17 +729,14 @@ object WcxNotifyClient : ClickableFeature() {
                                 TextField(
                                     value = cardThumbUrl,
                                     onValueChange = { cardThumbUrl = it },
-                                    label = { Text("卡片封面 URL（可空，留空用默认封面）") },
-                                )
-                                TextField(
-                                    value = cardPkgMd5,
-                                    onValueChange = { cardPkgMd5 = it },
-                                    label = { Text("包信息 MD5（可空，留空用模板里的）") },
+                                    label = { Text("卡片封面 URL（可空，留空用模板里的封面）") },
                                 )
                                 TextField(
                                     value = cardTemplate,
                                     onValueChange = { cardTemplate = it },
-                                    label = { Text("卡片模板 XML（粘贴一条可正常打开的小程序卡片报文）") },
+                                    label = {
+                                        Text("卡片模板 XML（粘贴一条刚分享出来的小程序卡片报文，含 <version>）")
+                                    },
                                     maxLines = 6,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
@@ -747,7 +753,6 @@ object WcxNotifyClient : ClickableFeature() {
                             notifyCardTemplate = cardTemplate.trim()
                             notifyCardPagePath = cardPagePath.trim()
                             notifyCardThumbUrl = cardThumbUrl.trim()
-                            notifyCardPkgMd5 = cardPkgMd5.trim()
                             restart()
                             onDismiss()
                         }) { Text("保存并重连") }
