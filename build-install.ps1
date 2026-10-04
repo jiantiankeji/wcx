@@ -8,8 +8,8 @@
     .\build-install.ps1 -Debug       # debug APK, then ask whether to install
     .\build-install.ps1 -NoInstall   # build only, skip adb (no prompt)
     .\build-install.ps1 -AllowDebugSigning
-                                     # release build without a keystore: carry
-                                     # on and produce a debug-signed APK
+                                     # skip the "no release keystore" prompt and
+                                     # build with the debug keystore anyway
 
   Behavior:
     - "Install to the connected device?" is asked on every run: press Enter to
@@ -37,10 +37,11 @@
     - Release signing follows build.gradle.kts: WEKIT_* environment variables
       (pre-filled from local-creds.env when it exists), then the default
       keystore locations ~/wcx-keystore.jks, ~/.wcx/wcx-keystore.jks and
-      <repo>/wcx-keystore.jks, and only then Android's debug keystore. A release
-      build aborts when none of them exists - like fastbuild.bat - because a
-      debug-signed APK can neither update a release-signed install nor be
-      distributed. Pass -AllowDebugSigning to override that on purpose.
+      <repo>/wcx-keystore.jks, and only then Android's debug keystore. When none
+      of them exists a release build asks whether to carry on with the debug
+      keystore (press Enter = yes, answer n = stop), because such an APK can
+      neither update a release-signed install nor be distributed. Pass
+      -AllowDebugSigning to skip that prompt.
     - Builds use --offline --parallel --max-workers=8, same as fastbuild.bat
       (gradle.properties keeps org.gradle.parallel=false for CI).
     - No -PdisableMinify: measured, APK grows 28MB -> 90MB and adb install
@@ -124,7 +125,18 @@ try {
         Write-Host '[warn] no release keystore found - building anyway because -AllowDebugSigning was passed.' -ForegroundColor Yellow
         Write-Host '[warn] The APK will be debug-signed: it can neither update a release-signed install nor be distributed.' -ForegroundColor Yellow
     } else {
-        Fail 'no release keystore found. Put local-creds.env at the repo root (copy local-creds.env.example and fill it in), or set WEKIT_KEYSTORE_FILE, or drop wcx-keystore.jks in the repo root / ~/.wcx. Pass -AllowDebugSigning to build a debug-signed APK anyway.'
+        # Same shape as the install prompt below: a debug-signed APK is still
+        # useful locally, but it should be a deliberate choice, not a silent one.
+        $signAnswer = 'y'
+        try {
+            $signAnswer = Read-Host 'No release keystore found - build with the Android debug keystore? [Y/n]'
+        } catch {
+            Write-Host '[warn] no interactive input available, assuming yes' -ForegroundColor Yellow
+        }
+        if ("$signAnswer".Trim() -match '^(n|no)$') {
+            Fail 'aborted: no release keystore. Put local-creds.env at the repo root (copy local-creds.env.example and fill it in), or set WEKIT_KEYSTORE_FILE, or drop wcx-keystore.jks in the repo root / ~/.wcx.'
+        }
+        Write-Host '[warn] building with the debug keystore: the APK can neither update a release-signed install nor be distributed.' -ForegroundColor Yellow
     }
 
     # --- 2. Android SDK location ---------------------------------------------
