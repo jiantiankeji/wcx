@@ -1346,12 +1346,18 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         }
     }
 
-    fun sendXmlAppMsg(target: String, xmlContent: String): Boolean {
+    /**
+     * 发送 appmsg XML 卡片。
+     *
+     * [thumbData] 是封面图字节：微信正常转发卡片时会先下载封面再把字节交给发送逻辑，
+     * 只把封面 URL 写进 XML 而这里传 null 的话，接收端卡片封面会显示空白。
+     */
+    fun sendXmlAppMsg(target: String, xmlContent: String, thumbData: ByteArray? = null): Boolean {
         val appId = extractXmlAttr(xmlContent, "appid")
         val title = extractXmlTag(xmlContent, "title")
 
-        WeLogger.d(TAG, "appmsg info: appid=$appId, title=$title")
-        return WeAppMsgApi.sendXmlAppMsg(target, title, appId, null, null, xmlContent)
+        WeLogger.d(TAG, "appmsg info: appid=$appId, title=$title, thumb=${thumbData?.size ?: 0}")
+        return WeAppMsgApi.sendXmlAppMsg(target, title, appId, null, thumbData, xmlContent)
     }
 
     /**

@@ -37,3 +37,9 @@ local.properties
 /app/src/main/java/com/Johnny/wcx/features/items/debug/LoadWeChatXDex.kt
 /app/src/main/java/com/Johnny/wcx/features/items/debug/MTH7851.kt
 dist/
+
+# Kotlin/IDE 编译输出目录（bin/main 下曾误提交过源文件副本）
+bin/
+
+# Trae IDE 的 HTML 分享包缓存
+.trae-html-share-packages/

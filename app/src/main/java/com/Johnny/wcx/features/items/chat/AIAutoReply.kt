@@ -51,6 +51,7 @@ import com.Johnny.wcx.preferences.WePrefs.Companion.prefOption
 import com.Johnny.wcx.ui.content.AlertDialogContent
 import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.DefaultColumn
+import com.Johnny.wcx.ui.content.GroupSelectorScreen
 import com.Johnny.wcx.ui.content.TextButton
 import com.Johnny.wcx.ui.utils.showComposeDialog
 import com.Johnny.wcx.utils.WeLogger
@@ -82,7 +83,7 @@ import java.util.Collections
 @Feature(
     name = "AI 自动回复",
     categories = ["聊天"],
-    description = "接入 AI 大模型自动回复消息，支持 OpenAI 兼容接口，可选择触发条件和指定群聊"
+    description = "接入 AI 大模型自动回复消息，支持 OpenAI 兼容接口与阿里云百炼知识库，可选择触发条件和指定群聊"
 )
 object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
 
@@ -109,6 +110,15 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
     private var privateChatMode by prefOption("ai_reply_private_mode", 0) // 0=全部, 1=白名单, 2=黑名单
     private var privateEnabledContacts by prefOption("ai_reply_private_contacts", emptySet<String>())
     private var allowStrangerPrivateReply by prefOption("ai_reply_allow_stranger", false)
+
+    // ── AI 提供方 ────────────────────────────────────────────────────────────────
+    private var aiProvider by prefOption("ai_reply_provider", AiProvider.OPENAI_COMPAT.value)
+
+    // 阿里云百炼(百炼)知识库应用配置
+    private var dashscopeEndpoint by prefOption("ai_reply_dashscope_endpoint", "https://dashscope.aliyuncs.com")
+    private var dashscopeAppId by prefOption("ai_reply_dashscope_app_id", "")
+    private var dashscopeApiKey by prefOption("ai_reply_dashscope_api_key", "")
+    private var dashscopeWorkspace by prefOption("ai_reply_dashscope_workspace", "default")
 
     // ── 用户干预检测 ────────────────────────────────────────────────────────────
     @Volatile
@@ -271,6 +281,11 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
         }.getOrDefault(emptyList())
     }
 
+    enum class AiProvider(val value: Int, val description: String) {
+        OPENAI_COMPAT(0, "OpenAI 兼容接口"),
+        DASHSCOPE_KB(1, "阿里云百炼知识库"),
+    }
+
     enum class TriggerMode(val value: Int, val description: String) {
         AT_ONLY(0, "仅被 @ 时回复"),
         KEYWORD(1, "包含关键词时回复"),
@@ -298,6 +313,11 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
             var localApiKey by remember { mutableStateOf(apiKey) }
             var localModel by remember { mutableStateOf(model) }
             var localPrompt by remember { mutableStateOf(systemPrompt) }
+            var localProvider by remember { mutableStateOf(aiProvider) }
+            var localEndpoint by remember { mutableStateOf(dashscopeEndpoint) }
+            var localAppId by remember { mutableStateOf(dashscopeAppId) }
+            var localDashscopeKey by remember { mutableStateOf(dashscopeApiKey) }
+            var localWorkspace by remember { mutableStateOf(dashscopeWorkspace) }
             var localEnablePrivate by remember { mutableStateOf(enableForPrivate) }
             var localEnableGroup by remember { mutableStateOf(enableForGroup) }
             var localKeyword by remember { mutableStateOf(groupTriggerKeyword) }
@@ -347,7 +367,9 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
             }
 
             // 配置非空时自动拉取一次可用模型；后续修改地址/Key 也会自动重新拉取（带防抖）
-            LaunchedEffect(localApiUrl, localApiKey) {
+            // 百炼知识库走应用调用接口，没有 OpenAI 兼容的模型列表，因此不参与拉取
+            LaunchedEffect(localApiUrl, localApiKey, localProvider) {
+                if (localProvider != AiProvider.OPENAI_COMPAT.value) return@LaunchedEffect
                 val u = localApiUrl.trim()
                 val k = localApiKey.trim()
                 if (u.isBlank() || k.isBlank()) return@LaunchedEffect
@@ -370,8 +392,9 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
 
             if (showGroupSelector) {
                 GroupSelectorScreen(
+                    description = if (localUseWhitelist) "选择需要开启 AI 自动回复的群聊" else "选择需要排除 AI 自动回复的群聊",
+                    initialSelected = enabledGroups,
                     onDismiss = { showGroupSelector = false },
-                    useWhitelist = localUseWhitelist,
                     onSave = { groups ->
                         enabledGroups = groups
                         showToast("已保存 ${groups.size} 个群聊")
@@ -427,6 +450,26 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
                     },
                     text = {
                         DefaultColumn(Modifier.padding(vertical = 8.dp), scrollable = true) {
+                            Text("AI 提供方", style = MaterialTheme.typography.titleSmall)
+                            AiProvider.values().forEach { provider ->
+                                ListItem(
+                                    modifier = Modifier.clickable { localProvider = provider.value },
+                                    trailingContent = {
+                                        Text(if (localProvider == provider.value) "✓" else "")
+                                    },
+                                    headlineContent = { Text(provider.description) },
+                                    supportingContent = {
+                                        Text(
+                                            when (provider) {
+                                                AiProvider.OPENAI_COMPAT -> "自行填写接口地址与模型，按聊天补全返回"
+                                                AiProvider.DASHSCOPE_KB -> "调用阿里云百炼应用，可挂知识库回答"
+                                            }
+                                        )
+                                    }
+                                )
+                            }
+
+                            if (localProvider == AiProvider.OPENAI_COMPAT.value) {
                             Text("API 配置", style = MaterialTheme.typography.titleSmall)
                             Text(
                                 "建议优先使用免费API测试模块连通性，确认功能正常后，再使用付费Token",
@@ -499,6 +542,42 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
                                 label = { Text("系统提示词") },
                                 maxLines = 3
                             )
+                            } else {
+                            Text("知识库配置", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "使用阿里云百炼(百炼)应用，请在百炼控制台创建应用并接入知识库，获取 App ID 与 API Key",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            OutlinedTextField(
+                                value = localEndpoint,
+                                onValueChange = { localEndpoint = it },
+                                label = { Text("API 地址") },
+                                supportingText = { Text("默认 https://dashscope.aliyuncs.com") },
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = localAppId,
+                                onValueChange = { localAppId = it },
+                                label = { Text("App ID") },
+                                supportingText = { Text("百炼控制台中的应用 ID") },
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = localDashscopeKey,
+                                onValueChange = { localDashscopeKey = it },
+                                label = { Text("API Key") },
+                                supportingText = { Text("自动去除首尾空格和不可见字符") },
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = localWorkspace,
+                                onValueChange = { localWorkspace = it },
+                                label = { Text("工作空间（可留空）") },
+                                supportingText = { Text("默认 default，多工作空间时填写空间 ID") },
+                                singleLine = true
+                            )
+                            }
 
                             Spacer(Modifier.padding(top = 12.dp))
                             Text("回复设置", style = MaterialTheme.typography.titleSmall)
@@ -639,10 +718,15 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
                     },
                     confirmButton = {
                         Button(onClick = {
+                            aiProvider = localProvider
                             apiUrl = localApiUrl.trim()
                             apiKey = localApiKey.trim()
                             model = localModel
                             systemPrompt = localPrompt
+                            dashscopeEndpoint = localEndpoint.trim().trimEnd('/')
+                            dashscopeAppId = localAppId.trim()
+                            dashscopeApiKey = localDashscopeKey.trim()
+                            dashscopeWorkspace = localWorkspace.trim()
                             enableForPrivate = localEnablePrivate
                             enableForGroup = localEnableGroup
                             groupTriggerKeyword = localKeyword
@@ -660,64 +744,6 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
             }
         }
     }
-
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    private fun GroupSelectorScreen(
-        onDismiss: () -> Unit,
-        useWhitelist: Boolean,
-        onSave: (Set<String>) -> Unit
-    ) {
-        val groups = remember {
-            WeDatabaseApi.getGroups().filter { it.wxId.isNotBlank() }
-        }
-        val selected = remember { enabledGroups.toMutableSet() }
-        val listState = rememberLazyListState()
-
-        AlertDialogContent(
-            title = { Text("选择群聊") },
-            text = {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.heightIn(max = 400.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    item {
-                        Text(
-                            if (useWhitelist) "选择需要开启 AI 自动回复的群聊" else "选择需要排除 AI 自动回复的群聊",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
-                    items(groups, key = { it.wxId }) { group ->
-                        val isSelected = remember { mutableStateOf(selected.contains(group.wxId)) }
-                        ListItem(
-                            modifier = Modifier.clickable {
-                                isSelected.value = !isSelected.value
-                                if (isSelected.value) {
-                                    selected.add(group.wxId)
-                                } else {
-                                    selected.remove(group.wxId)
-                                }
-                            },
-                            headlineContent = { Text(group.displayName) },
-                            supportingContent = { Text(group.wxId) },
-                            trailingContent = {
-                                Text(if (isSelected.value) "✓" else "")
-                            }
-                        )
-                    }
-                }
-            },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-            confirmButton = {
-                Button(onClick = {
-                    onSave(selected)
-                    onDismiss()
-                }) { Text("保存") }
-            }
-        )}
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -878,7 +904,13 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
 
     override fun onInsert(table: String, values: ContentValues) {
         if (table != "message") return
-        if (apiKey.isBlank()) return
+        // 未配置对应的提供方凭据时不触发，避免每条消息都白跑一次请求
+        val missingConfig = if (aiProvider == AiProvider.DASHSCOPE_KB.value) {
+            dashscopeAppId.isBlank() || dashscopeApiKey.isBlank()
+        } else {
+            apiKey.isBlank()
+        }
+        if (missingConfig) return
 
         val msgInfo = runCatching { MessageInfo.fromContentValues(values) }.getOrNull() ?: return
         val talker = msgInfo.talker
@@ -905,9 +937,8 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
 
             when (triggerMode) {
                 TriggerMode.AT_ONLY.value -> {
-                    val selfWxId = WeApi.selfWxId
-                    val atPattern = Regex("@(${selfWxId}|${WeDatabaseApi.getDisplayName(selfWxId)})", RegexOption.IGNORE_CASE)
-                    if (!atPattern.containsMatchIn(content)) return
+                    // 优先用 msgsource.atuserlist 精确判定是否 @ 到本人，缺失时才退回 @wxid/@昵称 正则
+                    if (!isMentionedMe(msgInfo)) return
                 }
                 TriggerMode.KEYWORD.value -> {
                     if (groupTriggerKeyword.isNotBlank() && !content.contains(groupTriggerKeyword)) return
@@ -953,25 +984,19 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
                     return@runCatching
                 }
 
-                val cleanContent = when {
-                    isGroup && triggerMode == TriggerMode.AT_ONLY.value -> {
-                        val selfWxId = WeApi.selfWxId
-                        val selfName = WeDatabaseApi.getDisplayName(selfWxId)
-                        content.replace("@$selfWxId", "").replace("@$selfName", "").trim()
-                    }
-                    isGroup && groupTriggerKeyword.isNotBlank() -> {
-                        content.replace(groupTriggerKeyword, "").trim()
-                    }
-                    else -> content
-                }
+                val cleanContent = buildAiPrompt(msgInfo, isGroup)
 
                 if (cleanContent.isBlank()) return@runCatching
 
-                val contextMsgs = loadConversationContext(talker)
-                val reply = callAI(cleanContent, contextMsgs)
+                // 百炼应用自带知识库与提示词，不接受外部拼装的对话历史
+                val reply = if (aiProvider == AiProvider.DASHSCOPE_KB.value) {
+                    callDashScope(cleanContent)
+                } else {
+                    callAI(cleanContent, loadConversationContext(talker))
+                }
                 if (reply.isNotBlank()) {
                     val finalReply = if (replyPrefix.isNotBlank()) "$replyPrefix$reply" else reply
-                    WeMessageApi.sendText(talker, finalReply)
+                    WeMessageApi.sendText(talker, sanitizeReply(finalReply))
                 } else {
                     val err = lastCallError
                     if (!err.isNullOrBlank()) {
@@ -987,6 +1012,197 @@ object AIAutoReply : ClickableFeature(), WeDatabaseListenerApi.IInsertListener {
             }.onFailure { e ->
                 WeLogger.e(TAG, "AI reply failed", e)
             }
+        }
+    }
+
+    // ── 群聊 @ 检测与提问文本构建 ─────────────────────────────────────────────
+    /**
+     * 判断群聊消息是否 @ 到本人。
+     *
+     * 优先使用微信数据库 lvbuffer 中的 `msgsource.atuserlist` 精确检测（[MessageInfo.isAtMe]）；
+     * 若该字段缺失/解析失败，则兜底用 `@wxid` / `@昵称` 文本正则匹配。
+     */
+    private fun isMentionedMe(msgInfo: MessageInfo): Boolean {
+        if (runCatching { msgInfo.isAtMe }.getOrDefault(false)) return true
+
+        val selfWxId = WeApi.selfWxId
+        if (selfWxId.isBlank()) return false
+        val selfName = WeDatabaseApi.getDisplayName(selfWxId)
+        val atPattern = Regex(
+            "@(${Regex.escape(selfWxId)}|${Regex.escape(selfName)})",
+            RegexOption.IGNORE_CASE
+        )
+        return atPattern.containsMatchIn(msgInfo.actualContent)
+    }
+
+    /**
+     * 构建发给 AI 的提问文本。
+     * 群聊 @ / 关键词触发时去掉 @ 标记与触发词，只把问题正文发给 AI。
+     */
+    private fun buildAiPrompt(msgInfo: MessageInfo, isGroup: Boolean): String {
+        val raw = msgInfo.actualContent
+        return when {
+            isGroup && triggerMode == TriggerMode.AT_ONLY.value -> stripMention(raw)
+            isGroup && triggerMode == TriggerMode.KEYWORD.value && groupTriggerKeyword.isNotBlank() ->
+                raw.replace(groupTriggerKeyword, "").trim()
+            else -> raw
+        }
+    }
+
+    private fun stripMention(text: String): String {
+        val selfWxId = WeApi.selfWxId
+        if (selfWxId.isBlank()) return text.trim()
+        val selfName = WeDatabaseApi.getDisplayName(selfWxId)
+        var result = Regex("@${Regex.escape(selfWxId)}", RegexOption.IGNORE_CASE).replace(text, "")
+        if (selfName.isNotBlank() && selfName != selfWxId) {
+            result = Regex("@${Regex.escape(selfName)}", RegexOption.IGNORE_CASE).replace(result, "")
+        }
+        return result.trim()
+    }
+
+    /**
+     * 过滤 AI 回复中的 Markdown 星号标记。
+     *
+     * 微信文本消息不支持 Markdown，知识库返回的 `**加粗**`、`*斜体*`、`* 列表项`
+     * 会原样显示星号，这里按顺序去掉标记但保留文字。
+     */
+    private fun sanitizeReply(text: String): String {
+        var result = text
+        // **加粗**（不跨行）
+        result = Regex("\\*\\*([^*\\n]+)\\*\\*").replace(result) { it.groupValues[1] }
+        // *斜体*（不跨行，且前后不再是星号）
+        result = Regex("(?<![*])\\*([^*\\n]+)\\*(?![*])").replace(result) { it.groupValues[1] }
+        // 行首列表项 "* xxx" → "xxx"
+        result = Regex("(?m)^\\s*\\*\\s+").replace(result, "")
+        // 残留孤立星号
+        return result.replace("*", "").trim()
+    }
+
+    // ── 阿里云百炼知识库应用调用 ──────────────────────────────────────────────
+    /**
+     * 调用阿里云百炼应用 completion 接口（非流式）。
+     * POST {endpoint}/api/v1/apps/{appId}/completion
+     */
+    private fun callDashScope(prompt: String): String {
+        val requestUrl = "${dashscopeEndpoint.trimEnd('/')}/api/v1/apps/$dashscopeAppId/completion"
+        val url = URL(requestUrl)
+        val connection = url.openConnection() as HttpURLConnection
+
+        val requestBody = buildJsonObject {
+            put("input", buildJsonObject {
+                put("prompt", prompt)
+            })
+            put("parameters", buildJsonObject {
+                put("enable_thinking", false)
+                put("has_thoughts", false)
+            })
+        }
+        val requestBodyStr = requestBody.toString()
+
+        return try {
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer $dashscopeApiKey")
+            if (dashscopeWorkspace.isNotBlank() && dashscopeWorkspace != "default") {
+                connection.setRequestProperty("X-DashScope-WorkSpace", dashscopeWorkspace)
+            }
+            connection.doOutput = true
+            connection.connectTimeout = 30000
+            connection.readTimeout = 90000
+
+            connection.outputStream.use { os ->
+                os.write(requestBodyStr.toByteArray(Charsets.UTF_8))
+            }
+
+            val responseCode = connection.responseCode
+            val responseBody = if (responseCode in 200..299) {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                runCatching {
+                    connection.errorStream?.bufferedReader()?.use { it.readText() }
+                }.getOrNull().orEmpty()
+            }
+
+            val serverError = extractServerError(responseBody)
+            val errorMsg = when (responseCode) {
+                401 -> "401 Unauthorized — API Key 无效或已过期"
+                403 -> "403 Forbidden — 无访问权限（检查 App ID / 工作空间）"
+                404 -> "404 Not Found — 接口地址或 App ID 不正确"
+                429 -> "429 Too Many Requests — 请求频率超限"
+                500 -> "500 Internal Server Error — 服务器内部错误"
+                else -> if (responseCode !in 200..299) "HTTP $responseCode" else null
+            }
+            val finalError = if (serverError != null) {
+                listOfNotNull(errorMsg, "服务端: $serverError").joinToString("；")
+            } else {
+                errorMsg
+            }
+            lastCallError = if (responseCode in 200..299) null else finalError
+
+            addDebugLog(
+                requestUrl = requestUrl,
+                requestBody = requestBodyStr,
+                responseCode = responseCode,
+                responseBody = responseBody,
+                error = finalError
+            )
+
+            if (responseCode != 200) {
+                WeLogger.e(TAG, "DashScope returned $responseCode: $finalError")
+                return ""
+            }
+
+            val parsed = parseDashScopeResponse(responseBody)
+            if (parsed.isBlank() && lastCallError == null) {
+                lastCallError = "百炼返回为空或解析失败（HTTP $responseCode）"
+            }
+            parsed
+        } catch (e: java.net.SocketTimeoutException) {
+            lastCallError = "请求超时"
+            addDebugLog(requestUrl, requestBodyStr, -1, "", "Timeout — 请求超时")
+            WeLogger.e(TAG, "DashScope call timeout", e)
+            ""
+        } catch (e: java.net.ConnectException) {
+            lastCallError = "无法连接服务器（ConnectException）"
+            addDebugLog(requestUrl, requestBodyStr, -1, "", "ConnectException — 无法连接服务器")
+            WeLogger.e(TAG, "DashScope call connect failed", e)
+            ""
+        } catch (e: java.net.UnknownHostException) {
+            lastCallError = "DNS 解析失败"
+            addDebugLog(requestUrl, requestBodyStr, -1, "", "UnknownHostException — DNS 解析失败")
+            WeLogger.e(TAG, "DashScope call unknown host", e)
+            ""
+        } catch (e: Exception) {
+            lastCallError = "异常: ${e.message}"
+            addDebugLog(requestUrl, requestBodyStr, -1, "", "Exception: ${e.message}")
+            WeLogger.e(TAG, "DashScope call failed", e)
+            ""
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /**
+     * 解析百炼应用响应，兼容多种结构：
+     * - 应用调用（非流式 / SSE 最终帧）: `output.text`
+     * - Chat 兼容格式: `choices[0].message.content` / `choices[0].delta.content`
+     */
+    private fun parseDashScopeResponse(response: String): String {
+        return try {
+            val root = json.parseToJsonElement(response).jsonObject
+
+            root["output"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: run {
+                    val choices = root["choices"]?.jsonArray ?: return@run ""
+                    val first = choices.firstOrNull()?.jsonObject ?: return@run ""
+                    val content = first["message"]?.jsonObject?.get("content")
+                        ?: first["delta"]?.jsonObject?.get("content")
+                    content?.jsonPrimitive?.contentOrNull?.trim() ?: ""
+                }
+        } catch (e: Exception) {
+            WeLogger.e(TAG, "Failed to parse DashScope response", e)
+            ""
         }
     }
 
