@@ -7,6 +7,9 @@
     .\build-install.ps1              # release APK, then ask whether to install
     .\build-install.ps1 -Debug       # debug APK, then ask whether to install
     .\build-install.ps1 -NoInstall   # build only, skip adb (no prompt)
+    .\build-install.ps1 -AllowDebugSigning
+                                     # release build without a keystore: carry
+                                     # on and produce a debug-signed APK
 
   Behavior:
     - "Install to the connected device?" is asked on every run: press Enter to
@@ -14,6 +17,7 @@
       the prompt and the install step.
     - Everything shown on the console is mirrored to buildlog.txt (the file is
       overwritten on every run), including gradlew's raw output.
+    - The built APKs are copied to dist/apk/ (same folder CI publishes).
     - The script never calls `exit`, so a dot-sourced run
       (". .\build-install.ps1") does not kill the hosting PowerShell session
       and a double-clicked run does not flash away. It prints the result and
@@ -30,9 +34,15 @@
     - AGP only creates lintVital* for release variants, so the lint skip is
       added to the release build only. Excluding a task that does not exist
       makes Gradle 9 abort with "Selection failed".
-    - Signing credentials are read from local-creds.env (same variables as
-      fastbuild.bat). If absent, Gradle falls back to the debug keystore, which
-      is fine for local installs but cannot overwrite a release-signed app.
+    - Release signing follows build.gradle.kts: WEKIT_* environment variables
+      (pre-filled from local-creds.env when it exists), then the default
+      keystore locations ~/wcx-keystore.jks, ~/.wcx/wcx-keystore.jks and
+      <repo>/wcx-keystore.jks, and only then Android's debug keystore. A release
+      build aborts when none of them exists - like fastbuild.bat - because a
+      debug-signed APK can neither update a release-signed install nor be
+      distributed. Pass -AllowDebugSigning to override that on purpose.
+    - Builds use --offline --parallel --max-workers=8, same as fastbuild.bat
+      (gradle.properties keeps org.gradle.parallel=false for CI).
     - No -PdisableMinify: measured, APK grows 28MB -> 90MB and adb install
       becomes flaky, so minify stays on.
     - Install is push + "pm install -r" (plain "adb install" fails
@@ -44,7 +54,8 @@
 # -Debug and collide with the switch below ("parameter Debug defined multiple times").
 param(
     [switch]$Debug,
-    [switch]$NoInstall
+    [switch]$NoInstall,
+    [switch]$AllowDebugSigning
 )
 
 $root = $PSScriptRoot
@@ -73,7 +84,10 @@ function Fail([string]$msg) {
 
 try {
 
-    # --- 1. signing credentials (optional) -----------------------------------
+    # --- 1. signing credentials ----------------------------------------------
+    # local-creds.env is read first but only fills variables that are not set
+    # yet, so CI-style environment variables keep priority. The keystore is then
+    # resolved the same way app/build.gradle.kts does.
     $credsFile = Join-Path $root 'local-creds.env'
     if (Test-Path $credsFile) {
         foreach ($line in Get-Content $credsFile) {
@@ -85,8 +99,32 @@ try {
             }
         }
     }
-    if (-not $env:WEKIT_KEYSTORE_FILE) {
-        Write-Host '[warn] local-creds.env not found - Gradle will sign with the debug keystore fallback' -ForegroundColor Yellow
+
+    $keystorePath = $env:WEKIT_KEYSTORE_FILE
+    if ($keystorePath -and -not (Test-Path $keystorePath)) {
+        Write-Host "[warn] WEKIT_KEYSTORE_FILE points at a missing file: $keystorePath" -ForegroundColor Yellow
+        $keystorePath = $null
+    }
+    if (-not $keystorePath) {
+        $homeDir = [Environment]::GetFolderPath('UserProfile')
+        foreach ($candidate in @(
+            (Join-Path $homeDir 'wcx-keystore.jks'),
+            (Join-Path $homeDir '.wcx\wcx-keystore.jks'),
+            (Join-Path $root 'wcx-keystore.jks')
+        )) {
+            if (Test-Path $candidate) { $keystorePath = $candidate; break }
+        }
+    }
+
+    if ($keystorePath) {
+        Write-Host "[info] release keystore: $keystorePath" -ForegroundColor DarkGray
+    } elseif ($Debug) {
+        Write-Host '[info] no release keystore - debug variant, Android debug keystore will be used' -ForegroundColor DarkGray
+    } elseif ($AllowDebugSigning) {
+        Write-Host '[warn] no release keystore found - building anyway because -AllowDebugSigning was passed.' -ForegroundColor Yellow
+        Write-Host '[warn] The APK will be debug-signed: it can neither update a release-signed install nor be distributed.' -ForegroundColor Yellow
+    } else {
+        Fail 'no release keystore found. Put local-creds.env at the repo root (copy local-creds.env.example and fill it in), or set WEKIT_KEYSTORE_FILE, or drop wcx-keystore.jks in the repo root / ~/.wcx. Pass -AllowDebugSigning to build a debug-signed APK anyway.'
     }
 
     # --- 2. Android SDK location ---------------------------------------------
@@ -118,14 +156,16 @@ try {
     if (-not $Debug) {
         $gradleArgs += @('-x', "lintVitalStandard$variant", '-x', "lintVitalReportStandard$variant")
     }
-    $gradleArgs += '--console=plain'
+    # Same speed switches as fastbuild.bat; gradle.properties keeps
+    # org.gradle.parallel=false for the CI setting, so the override lives here.
+    $gradleArgs += @('--offline', '--parallel', '--max-workers=8', '--console=plain')
 
     # "2>&1 | Out-Host" keeps gradle's raw output flowing through PowerShell so
     # the transcript captures it; $LASTEXITCODE still reflects gradlew.bat.
     & (Join-Path $root 'gradlew.bat') @gradleArgs 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { Fail "gradle $task failed" }
 
-    # --- 4. locate the apk(s) ------------------------------------------------
+    # --- 4. locate the apk(s) and stage them in dist/apk (as CI does) --------
     # ABI splits are on, so there is usually no single app-standard-<variant>.apk.
     $apkDir = Join-Path $root "app\build\outputs\apk\standard\$($variant.ToLower())"
     if (-not (Test-Path $apkDir)) { Fail "apk output directory not found: $apkDir" }
@@ -133,9 +173,14 @@ try {
     $apks = @(Get-ChildItem -Path $apkDir -Filter '*.apk' -File | Sort-Object Name)
     if ($apks.Count -eq 0) { Fail "no apk produced in $apkDir" }
 
+    $distDir = Join-Path $root 'dist\apk'
+    New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+
     foreach ($a in $apks) {
+        Copy-Item -LiteralPath $a.FullName -Destination $distDir -Force
         Write-Host ("=== built: {0} ({1} MB) ===" -f $a.FullName, [math]::Round($a.Length / 1MB, 2)) -ForegroundColor Green
     }
+    Write-Host "=== apk copied to $distDir ===" -ForegroundColor Green
 
     # --- 5. ask whether to install -------------------------------------------
     # Asked on every run; -NoInstall skips both the prompt and the install.

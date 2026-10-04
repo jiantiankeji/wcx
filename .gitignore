@@ -46,3 +46,6 @@ bin/
 
 # 本地构建脚本 build-install.ps1 生成的日志
 /buildlog.txt
+
+# 本地签名凭据（绝不可提交）
+/local-creds.env
