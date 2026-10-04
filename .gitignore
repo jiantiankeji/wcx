@@ -43,3 +43,6 @@ bin/
 
 # Trae IDE 的 HTML 分享包缓存
 .trae-html-share-packages/
+
+# 本地构建脚本 build-install.ps1 生成的日志
+/buildlog.txt
