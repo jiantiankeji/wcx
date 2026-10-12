@@ -12,17 +12,21 @@ plugins {
     alias(libs.plugins.aboutlibraries.android)
 }
 
-fun getCommitCount(): Int {
-    return providers.exec {
-        commandLine("git", "rev-list", "--count", "HEAD")
-    }.standardOutput.asText.get().trim().toInt()
-}
+// Source ZIPs often do not include .git metadata. Do not make a clean export
+// impossible to build just because the repository history is unavailable.
+fun gitValue(vararg args: String): String? = runCatching {
+    providers.exec {
+        commandLine("git", *args)
+        isIgnoreExitValue = true
+    }.let { result ->
+        if (result.result.get().exitValue == 0) result.standardOutput.asText.get().trim().takeIf { it.isNotEmpty() }
+        else null
+    }
+}.getOrNull()
 
-fun getGitHash(): String {
-    return providers.exec {
-        commandLine("git", "rev-parse", "--short", "HEAD")
-    }.standardOutput.asText.get().trim()
-}
+fun getCommitCount(): Int = gitValue("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 0
+
+fun getGitHash(): String = gitValue("rev-parse", "--short", "HEAD") ?: "source-zip"
 
 android {
     namespace = libs.versions.namespace.get()
@@ -42,8 +46,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // 版本号单一数据源：CI（.github/workflows/ci.yml）直接读取此处，
         // 发版时只需在此递增 versionCode / versionName
-        versionCode = 259
-        versionName = "v259"
+        versionCode = 281
+        versionName = "v281"
 
         buildConfigField("String", "COMMIT_HASH", "\"${gitHash}\"")
         buildConfigField("String", "TAG", "\"WCX\"")
@@ -299,6 +303,25 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.serialization.protobuf)
     implementation(libs.mmkv)
+    // Termux 终端（GPLv3）：terminal-view 依赖 terminal-emulator
+    implementation(files("libs/terminal-emulator-0.118.0.aar"))
+    implementation(files("libs/terminal-view-0.118.0.aar"))
+    // Hchat 脚本子系统依赖（迁移）
+    implementation("io.github.billywei01:fastkv:3.0.1")
+    implementation("com.google.flatbuffers:flatbuffers-java:23.5.26")
+    implementation("dev.rikka.ndk.thirdparty:cxx:1.2.0")
+    implementation("com.github.REAndroid:ARSCLib:V1.3.8")
+    implementation("io.github.skylot:jadx-dex-input:1.5.5") {
+        exclude(group = "com.google.guava", module = "guava")
+    }
+    implementation("com.google.guava:guava:33.5.0-android")
+    implementation("com.android.tools.smali:smali-baksmali:3.0.9")
+    implementation("com.highcapable.kavaref:kavaref-core:1.1.0")
+    implementation("com.jakewharton.android.repackaged:dalvik-dx:16.0.1")
+    implementation("com.alibaba.fastjson2:fastjson2:2.0.61.android8")
+    implementation("androidx.navigationevent:navigationevent:1.1.2")
+    implementation("androidx.navigationevent:navigationevent-compose:1.1.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.5.1")
 
     implementation(project(":libs:common:bsh"))
 
@@ -322,7 +345,7 @@ dependencies {
     implementation(libs.okhttp3.okhttp)
     implementation(libs.jsoup)
 
-    implementation(libs.rhino)
+    implementation(files("libs/rhino-45f29f6.jar"))
 
     implementation(libs.fastjson2)
 
