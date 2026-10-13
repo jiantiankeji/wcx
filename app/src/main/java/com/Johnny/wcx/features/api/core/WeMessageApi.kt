@@ -1178,6 +1178,11 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         } catch (e: Exception) {
             WeLogger.e(TAG, "failed to send text message", e)
             false
+        } catch (e: NoSuchMethodError) {
+            // The host WeChat version may change the reflected NetSceneSendMsg constructor.
+            // Do not let a failed text fallback crash the WeChat process.
+            WeLogger.e(TAG, "failed to send text message: NetSceneSendMsg constructor is unavailable", e)
+            false
         }
     }
 
