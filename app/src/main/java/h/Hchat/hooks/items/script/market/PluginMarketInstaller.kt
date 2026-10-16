@@ -73,7 +73,7 @@ object PluginMarketInstaller {
     }
 
     private fun currentUploaderIdentity(): UploaderIdentity {
-        val account = WeChatApis.account() ?: error("当前微信账号资料尚未就绪，请重启微信后重试")
+        val account = WeChatApis.account() ?: error("微信账号 API 尚未就绪（模块引导未完成），请到脚本页「脚本功能诊断」查看原因")
         val wxId = account.selfWxId().trim()
         require(wxId.isNotBlank()) { "无法读取当前账号 wxid，请重启微信后重试" }
         val contact = runCatching { WeChatApis.contacts()?.getContact(wxId) }.getOrNull()

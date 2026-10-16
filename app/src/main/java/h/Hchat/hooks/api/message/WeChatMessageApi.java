@@ -787,20 +787,31 @@ public final class WeChatMessageApi {
                                      int messageType,
                                      int sendFlag,
                                      Object sourceArgs) throws Throwable {
+        // 微信 8.0.79+ 的发送文本构造器尾部多一个 msgSource(String) 参数（如 f61.s0）。
+        // 按实际构造器参数个数自适应传参，兼容 5 参（旧）与 6 参（新）。
         if (sourceArgs != null) {
             Constructor<?> objectCtor = dexFinder.sendTextMsgCtorObject;
             if (objectCtor != null) {
+                if (objectCtor.getParameterCount() >= 6) {
+                    return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs, null);
+                }
                 return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs);
             }
         }
 
         Constructor<?> longCtor = dexFinder.sendTextMsgCtorLong;
         if (longCtor != null) {
+            if (longCtor.getParameterCount() >= 6) {
+                return KavaReflector.newInstance(longCtor, talker, content, messageType, sendFlag, 0L, null);
+            }
             return KavaReflector.newInstance(longCtor, talker, content, messageType, sendFlag, 0L);
         }
 
         Constructor<?> objectCtor = dexFinder.sendTextMsgCtorObject;
         if (objectCtor != null) {
+            if (objectCtor.getParameterCount() >= 6) {
+                return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs, null);
+            }
             return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs);
         }
 

@@ -52,6 +52,9 @@ object HideConversations : SwitchFeature(), IResolveDex,
     WeDatabaseListenerApi.IInsertListener,
     WeDatabaseListenerApi.IUpdateListener {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideConversations"
 
     /**
@@ -339,6 +342,9 @@ object HideConversations : SwitchFeature(), IResolveDex,
 )
 object HideSecretContacts : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryListener {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideSecretContacts"
 
     /**
@@ -384,6 +390,9 @@ object HideSecretContacts : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.
     description = "通讯录标签成员列表与朋友圈「谁可以看」选择器中不再出现密友"
 )
 object HideTagMembers : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryListener {
+
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
 
     private const val TAG = "HideTagMembers"
 
@@ -431,6 +440,9 @@ object HideTagMembers : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQue
 )
 object BlockChat : SwitchFeature() {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "BlockChat"
 
     override fun onEnable() {
@@ -444,9 +456,18 @@ object BlockChat : SwitchFeature() {
             param.result = 0
         }
 
-        ChattingUI::class.reflekt()
-            .firstMethod { name = "onCreate"; parameterCount = 1 }
-            .hookAfter {
+        val chatOnCreate = runCatching {
+            ChattingUI::class.reflekt()
+                .firstMethodOrNull { name = "onCreate"; parameterCount = 1 }
+        }.getOrElse {
+            WeLogger.w(TAG, "解析 ChattingUI.onCreate 失败，禁止进入聊天退化为仅 startActivity 拦截", it)
+            null
+        }
+        if (chatOnCreate == null) {
+            WeLogger.w(TAG, "ChattingUI.onCreate 未解析（类/方法缺失），禁止进入聊天退化为仅 startActivity 拦截")
+            return
+        }
+        chatOnCreate.hookAfter {
                 // after 里 finish，绝不能在 before 里跳过 onCreate——原方法被跳过后
                 // super.onCreate() 得不到调用，framework 抛 SuperNotCalledException 直接崩
                 //（第一道拦截在 WeStartActivityApi，页面通常根本不会启动）
@@ -476,6 +497,9 @@ object BlockChat : SwitchFeature() {
 )
 object BlockProfile : SwitchFeature() {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "BlockProfile"
 
     override fun onEnable() {
@@ -488,9 +512,18 @@ object BlockProfile : SwitchFeature() {
         }
 
         // ContactInfoUI stub 不是 Activity, 统一按 Activity 处理(真实微信里它是 Activity)
-        ContactInfoUI::class.reflekt()
-            .firstMethod { name = "onCreate"; parameterCount = 1 }
-            .hookAfter {
+        val contactOnCreate = runCatching {
+            ContactInfoUI::class.reflekt()
+                .firstMethodOrNull { name = "onCreate"; parameterCount = 1 }
+        }.getOrElse {
+            WeLogger.w(TAG, "解析 ContactInfoUI.onCreate 失败，禁止查看资料退化为仅 startActivity 拦截", it)
+            null
+        }
+        if (contactOnCreate == null) {
+            WeLogger.w(TAG, "ContactInfoUI.onCreate 未解析（类/方法缺失），禁止查看资料退化为仅 startActivity 拦截")
+            return
+        }
+        contactOnCreate.hookAfter {
                 // after 里 finish，绝不能在 before 里跳过 onCreate（SuperNotCalledException）
                 val activity = thisObject as? Activity ?: return@hookAfter
                 val wxId = activity.intent?.getStringExtra("Contact_User") ?: return@hookAfter

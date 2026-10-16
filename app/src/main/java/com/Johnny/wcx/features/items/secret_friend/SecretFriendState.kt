@@ -6,6 +6,7 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import com.Johnny.wcx.constants.Preferences
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.preferences.WePrefs.Companion.prefOption
@@ -119,11 +120,14 @@ object SecretFriendState {
     fun isStoredSecret(wxId: String?): Boolean =
         !wxId.isNullOrEmpty() && getMaskItems().any { it.maskId == wxId }
 
-    /** 名单主控开关是否开启（pref 缺省开启，保持从未操作过开关的旧行为）。 */
-    fun isSecretFriendMasterOn(): Boolean = WePrefs.getBoolOrDef(MASTER_ENABLED_PREF, true)
-
-    /** 主控开关的 pref 键（与「密友名单管理」功能开关一致）。 */
-    private const val MASTER_ENABLED_PREF = "密友名单管理"
+    /**
+     * 名单主控开关是否开启（缺省开启）。
+     *
+     * 唯一数据源 = 「密友功能」分类页顶部的总开关（[Preferences.secretFriendMasterEnabled]）。
+     * 此前这里读的是「密友名单管理」功能自身的开关 pref，与分类页总开关是两个不同的键，
+     * 于是会出现「总开关明明关了，诊断页却显示开启」的不一致——现统一到分类页总开关。
+     */
+    fun isSecretFriendMasterOn(): Boolean = Preferences.secretFriendMasterEnabled
 
     /** 生效密友 wxid 集合：主控关闭时视为空——所有隐藏/拦截功能整体失效。 */
     fun getWxIds(): Set<String> =

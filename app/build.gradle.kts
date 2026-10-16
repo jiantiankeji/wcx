@@ -46,8 +46,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // 版本号单一数据源：CI（.github/workflows/ci.yml）直接读取此处，
         // 发版时只需在此递增 versionCode / versionName
-        versionCode = 281
-        versionName = "v281"
+        versionCode = 312
+        versionName = "v312"
 
         buildConfigField("String", "COMMIT_HASH", "\"${gitHash}\"")
         buildConfigField("String", "TAG", "\"WCX\"")
@@ -97,7 +97,8 @@ android {
     //   2. gradle 属性同名 key
     //   3. 默认 keystore：~/wcx-keystore.jks → ~/.wcx/wcx-keystore.jks → <rootProject>/wcx-keystore.jks
     //      （alias=wcx，store/key 密码 wcx-store-pass，与历史交付 APK 一致）
-    //   4. 都找不到 → 回退 Android 默认 debug keystore（仅 CI 临时构建）
+    //   4. 都找不到 → release 不签名（已禁用 debug 兜底；用户要求永远用仓库固定签名，
+    //      由 CI 的「Verify APK signatures」步骤校验产物签名）
     // ────────────────────────────────────────────────────────────────────────
     @Suppress("LocalVariableName")
     signingConfigs {
@@ -143,7 +144,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName(if (foundKeystore) "release" else "debug")
+            // 用户要求：release 永远使用固定签名，禁止回退 debug keystore
+            // （避免产出无法覆盖安装的包）。未找到固定签名时不设 signingConfig
+            // （产物未签名），并由 CI 的「Verify APK signatures」步骤兜底拦下。
+            if (foundKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn("未找到固定签名 keystore：release 将不签名（已禁用 debug 兜底）。请检查 WEKIT_KEYSTORE_FILE 或项目根 wcx-keystore.jks。\n")
+            }
         }
     }
 

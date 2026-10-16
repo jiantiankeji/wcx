@@ -114,6 +114,10 @@ public final class WeChatLifecycleApi {
     private int hookLifecycleMethod(String methodName, String event) {
         try {
             Method method = KavaReflector.findDeclaredMethod(Activity.class, methodName);
+            if (method == null) {
+                log("生命周期Hook失败: " + methodName + " 方法未找到");
+                return 0;
+            }
             HookRegistry.get().hook(method, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {

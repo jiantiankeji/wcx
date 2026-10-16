@@ -9,6 +9,7 @@ import h.Hchat.utils.KavaReflector;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -312,12 +313,28 @@ public final class WeChatDatabaseApi {
         }
         Object storage = getCoreStorage();
         if (storage == null) return false;
+
+        // 策略 A：从 CoreStorage 递归寻找携带查询方法的 SqliteDB wrapper。
         Object wrapper = findDbWrapper(storage);
+        Method method = wrapper != null ? findQueryMethod(wrapper.getClass()) : null;
+
+        // 策略 B（WCX 侧已验证可用的取库路径）：按字段类型定位 SqliteDB wrapper，
+        // 再调用其返回 com.tencent.wcdb.database.SQLiteDatabase 的方法，取得真正可查询的数据库对象。
+        if (wrapper == null || method == null) {
+            Object wcdb = resolveWcdbDatabase(storage);
+            if (wcdb != null) {
+                Method wcdbQuery = findQueryMethod(wcdb.getClass());
+                if (wcdbQuery != null) {
+                    wrapper = wcdb;
+                    method = wcdbQuery;
+                }
+            }
+        }
+
         if (wrapper == null) {
-            log("未找到 SqliteDB wrapper");
+            log("未找到 SqliteDB wrapper（CoreStorage=" + storage.getClass().getName() + "）");
             return false;
         }
-        Method method = findQueryMethod(wrapper.getClass());
         if (method == null) {
             log("未找到 SqliteDB 查询方法: " + wrapper.getClass().getName());
             return false;
@@ -327,6 +344,207 @@ public final class WeChatDatabaseApi {
         log("数据库API已就绪: wrapper=" + wrapper.getClass().getName()
                 + " query=" + method.getName());
         return true;
+    }
+
+    private static final String WCDB_SQLITE_DATABASE = "com.tencent.wcdb.database.SQLiteDatabase";
+    private static final String ANDROID_SQLITE_DATABASE = "android.database.sqlite.SQLiteDatabase";
+
+    /**
+     * 策略 B（对齐 WCX 侧已验证可用的取库方式）：定位 SqliteDB wrapper，再取其底层 WCDB SQLiteDatabase。
+     * 不依赖字段声明类型与 DexKit 类严格相等，兼容接口/父类声明与混淆造成的类差异。
+     */
+    private Object resolveWcdbDatabase(Object storage) {
+        Object wrapper = findWrapperValue(storage);
+        if (wrapper == null && dexFinder.mmKernelClass != null) {
+            wrapper = scanStaticWrapper(dexFinder.mmKernelClass);
+        }
+        if (wrapper == null) {
+            log("WCDB 取库失败: 未在 CoreStorage("
+                    + (storage == null ? "null" : storage.getClass().getName())
+                    + ")中找到 SqliteDB wrapper");
+            return null;
+        }
+        Object db = invokeNoArgReturning(wrapper, WCDB_SQLITE_DATABASE);
+        if (db == null) {
+            db = invokeNoArgReturning(wrapper, ANDROID_SQLITE_DATABASE);
+        }
+        if (db == null) {
+            log("WCDB 取库失败: wrapper=" + wrapper.getClass().getName() + " 未返回 SQLiteDatabase");
+            return null;
+        }
+        log("WCDB 取库成功: wrapper=" + wrapper.getClass().getName() + " db=" + db.getClass().getName());
+        return db;
+    }
+
+    /** 在对象字段（含父类与静态）中按「类型或行为」定位 SqliteDB wrapper 实例。 */
+    private Object findWrapperValue(Object storage) {
+        if (storage == null) return null;
+        Class<?> cur = storage.getClass();
+        while (cur != null && cur != Object.class) {
+            for (Field field : fieldsOf(cur)) {
+                try {
+                    Object value = field.get(storage);
+                    if (value != null && looksLikeDbWrapper(value)) return value;
+                } catch (Throwable ignored) {}
+            }
+            cur = cur.getSuperclass();
+        }
+        return null;
+    }
+
+    /** 扫描类的静态字段，定位 wrapper 实例。 */
+    private Object scanStaticWrapper(Class<?> owner) {
+        Class<?> cur = owner;
+        while (cur != null && cur != Object.class) {
+            for (Field field : fieldsOf(cur)) {
+                try {
+                    if (!Modifier.isStatic(field.getModifiers())) continue;
+                    Object value = field.get(null);
+                    if (value != null && looksLikeDbWrapper(value)) return value;
+                } catch (Throwable ignored) {}
+            }
+            cur = cur.getSuperclass();
+        }
+        return null;
+    }
+
+    /** 判断对象是否可能是 SqliteDB wrapper：类型匹配 DexKit 结果，或自身能取到 SQLiteDatabase。 */
+    private boolean looksLikeDbWrapper(Object value) {
+        if (value == null) return false;
+        Class<?> clazz = value.getClass();
+        Class<?> wrapperClass = dexFinder.sqliteDbWrapperClass;
+        if (wrapperClass != null) {
+            if (wrapperClass.isInstance(value) || wrapperClass.isAssignableFrom(clazz)) return true;
+            for (Class<?> itf : wrapperClass.getInterfaces()) {
+                if (itf.isInstance(value)) return true;
+            }
+            for (Class<?> itf : clazz.getInterfaces()) {
+                if (itf == wrapperClass) return true;
+            }
+        }
+        return findSqliteDatabaseGetter(clazz) != null;
+    }
+
+    /** 查找返回 WCDB/Android SQLiteDatabase 的无参实例方法。 */
+    private Method findSqliteDatabaseGetter(Class<?> type) {
+        if (type == null) return null;
+        Class<?> cur = type;
+        while (cur != null && cur != Object.class) {
+            for (Method method : methodsOf(cur)) {
+                if (Modifier.isStatic(method.getModifiers())) continue;
+                if (method.getParameterTypes().length != 0) continue;
+                String returnName = method.getReturnType().getName();
+                if (WCDB_SQLITE_DATABASE.equals(returnName) || ANDROID_SQLITE_DATABASE.equals(returnName)) {
+                    return method;
+                }
+            }
+            cur = cur.getSuperclass();
+        }
+        return null;
+    }
+
+    /** 调用对象的无参且返回类型为 returnClassName 的方法。 */
+    private Object invokeNoArgReturning(Object target, String returnClassName) {
+        if (target == null) return null;
+        Class<?> cur = target.getClass();
+        while (cur != null && cur != Object.class) {
+            for (Method method : methodsOf(cur)) {
+                try {
+                    if (Modifier.isStatic(method.getModifiers())) continue;
+                    if (method.getParameterTypes().length != 0) continue;
+                    if (!returnClassName.equals(method.getReturnType().getName())) continue;
+                    Object result = method.invoke(target);
+                    if (result != null) return result;
+                } catch (Throwable ignored) {}
+            }
+            cur = cur.getSuperclass();
+        }
+        return null;
+    }
+
+    /** 反射枚举字段（含私有），失败返回空列表。 */
+    private static List<Field> fieldsOf(Class<?> clazz) {
+        if (clazz == null) return Collections.emptyList();
+        try {
+            Field[] declared = clazz.getDeclaredFields();
+            List<Field> list = new ArrayList<>(declared.length);
+            for (Field field : declared) {
+                try {
+                    field.setAccessible(true);
+                } catch (Throwable ignored) {}
+                list.add(field);
+            }
+            return list;
+        } catch (Throwable e) {
+            return Collections.emptyList();
+        }
+    }
+
+    /** 反射枚举方法（含私有），失败返回空列表。 */
+    private static List<Method> methodsOf(Class<?> clazz) {
+        if (clazz == null) return Collections.emptyList();
+        try {
+            Method[] declared = clazz.getDeclaredMethods();
+            List<Method> list = new ArrayList<>(declared.length);
+            for (Method method : declared) {
+                try {
+                    method.setAccessible(true);
+                } catch (Throwable ignored) {}
+                list.add(method);
+            }
+            return list;
+        } catch (Throwable e) {
+            return Collections.emptyList();
+        }
+    }
+
+    /** 定位无参且返回指定类型的方法（WCX 侧 MMKernel 取 CoreStorage 的方式）。 */
+    private Method findMethodReturning(Class<?> owner, Class<?> returnType, boolean requireStatic) {
+        if (owner == null || returnType == null) return null;
+        Class<?> cur = owner;
+        while (cur != null && cur != Object.class) {
+            for (Method method : methodsOf(cur)) {
+                if (Modifier.isStatic(method.getModifiers()) != requireStatic) continue;
+                if (method.getParameterTypes().length != 0) continue;
+                if (method.getReturnType() != returnType) continue;
+                return method;
+            }
+            cur = cur.getSuperclass();
+        }
+        return null;
+    }
+
+    /** 供诊断页展示的取库链路自检（仅轻量检查，避免主线程遍历大对象图）。 */
+    public String diagnose() {
+        Class<?> wrapperClass = dexFinder.sqliteDbWrapperClass;
+        Method getter = dexFinder.coreStorageGetter;
+        StringBuilder sb = new StringBuilder();
+        if (getter == null) {
+            sb.append("取库方法=未解析");
+        } else {
+            sb.append("取库方法=").append(getter.getName())
+                    .append(Modifier.isStatic(getter.getModifiers()) ? "(static)" : "(instance)");
+        }
+        sb.append(" / wrapper类=").append(wrapperClass == null ? "未解析" : wrapperClass.getName());
+        Object storage = getCoreStorage();
+        sb.append(" / storage=").append(storage == null ? "null" : storage.getClass().getName());
+        if (storage != null) {
+            int fieldCount = 0;
+            Class<?> cur = storage.getClass();
+            while (cur != null && cur != Object.class) {
+                fieldCount += fieldsOf(cur).size();
+                cur = cur.getSuperclass();
+            }
+            Object direct = findWrapperValue(storage);
+            sb.append(" / 字段数=").append(fieldCount)
+                    .append(" / 字段命中=").append(direct != null ? direct.getClass().getName() : "否");
+            if (direct == null && dexFinder.mmKernelClass != null) {
+                Object staticHit = scanStaticWrapper(dexFinder.mmKernelClass);
+                sb.append(" / MMKernel静态命中=").append(staticHit != null ? staticHit.getClass().getName() : "否");
+            }
+        }
+        sb.append(" / 已就绪=").append(isReady() ? "是" : "否");
+        return sb.toString();
     }
 
     private Cursor rawQueryInternal(String sql, String[] args, boolean logError) {
@@ -387,7 +605,7 @@ public final class WeChatDatabaseApi {
         if (candidate == null || dexFinder == null || dexFinder.localMessageClass == null) return null;
         Class<?> cur = candidate.getClass();
         while (cur != null && cur != Object.class) {
-            for (Method method : KavaReflector.declaredMethods(cur)) {
+            for (Method method : methodsOf(cur)) {
                 if (!isNativeMessageByIdMethod(method)) continue;
                 return KavaReflector.accessible(method);
             }
@@ -424,7 +642,7 @@ public final class WeChatDatabaseApi {
     private Method findNativeMessageUpdateMethod(Object candidate, Object nativeMessage) {
         Class<?> cur = candidate.getClass();
         while (cur != null && cur != Object.class) {
-            for (Method method : KavaReflector.declaredMethods(cur)) {
+            for (Method method : methodsOf(cur)) {
                 if (isNativeMessageUpdateMethod(method, nativeMessage)) {
                     return KavaReflector.accessible(method);
                 }
@@ -456,7 +674,7 @@ public final class WeChatDatabaseApi {
         List<Object> result = new ArrayList<>();
         Class<?> cur = storage.getClass();
         while (cur != null && cur != Object.class) {
-            for (Field field : KavaReflector.declaredFields(cur)) {
+            for (Field field : fieldsOf(cur)) {
                 try {
                     if (KavaReflector.isStatic(field)) continue;
                     Class<?> type = field.getType();
@@ -473,7 +691,7 @@ public final class WeChatDatabaseApi {
     private Method findMessageTableMethod(Object candidate, String talker) {
         Class<?> cur = candidate.getClass();
         while (cur != null && cur != Object.class) {
-            for (Method method : KavaReflector.declaredMethods(cur)) {
+            for (Method method : methodsOf(cur)) {
                 if (!isMessageTableNameMethod(method)) continue;
                 Object value = KavaReflector.invoke(method, candidate, talker);
                 if (value instanceof String && isUsableMessageTable((String) value)) {
@@ -568,50 +786,118 @@ public final class WeChatDatabaseApi {
 
     public Object getCoreStorage() {
         if (coreStorage != null) return coreStorage;
-        try {
-            Method getter = dexFinder.coreStorageGetter;
-            Object target = KavaReflector.isStatic(getter) ? null : dexFinder.mmKernelClass;
-            Object storage = KavaReflector.invoke(getter, target);
-            if (storage != null) {
-                coreStorage = storage;
-                return storage;
+        Class<?> expected = dexFinder.coreStorageClass;
+        Object storage = invokeGetter(dexFinder.coreStorageGetter);
+        if (expected != null && storage != null && !expected.isInstance(storage)) {
+            log("获取 CoreStorage 失败: 返回类型不匹配，实际=" + storage.getClass().getName()
+                    + "，期望=" + expected.getName());
+            Object alt = resolveStorageByReturnType(expected);
+            if (alt != null) storage = alt;
+        }
+        if (storage == null && expected != null) {
+            storage = resolveStorageByReturnType(expected);
+        }
+        if (storage == null) {
+            log("获取 CoreStorage 失败: 取库方法未返回对象");
+            return null;
+        }
+        coreStorage = storage;
+        return storage;
+    }
+
+    /** 按 WCX 侧方式取 CoreStorage：MMKernel 上无参、返回 CoreStorage 类的方法（优先静态）。 */
+    private Object resolveStorageByReturnType(Class<?> returnType) {
+        if (dexFinder.mmKernelClass == null || returnType == null) return null;
+        Method method = findMethodReturning(dexFinder.mmKernelClass, returnType, true);
+        if (method != null) {
+            Object value = invokeGetter(method);
+            if (value != null) return value;
+        }
+        Object kernel = KavaReflector.staticInstance(dexFinder.mmKernelClass);
+        if (kernel != null) {
+            method = findMethodReturning(dexFinder.mmKernelClass, returnType, false);
+            if (method != null) {
+                Object value = KavaReflector.invoke(method, kernel);
+                if (value != null) return value;
             }
-        } catch (Throwable e) {
-            log("获取 CoreStorage 失败: " + e.getMessage());
         }
         return null;
     }
 
+    private Object invokeGetter(Method getter) {
+        if (getter == null) return null;
+        try {
+            KavaReflector.accessible(getter);
+            Object target = Modifier.isStatic(getter.getModifiers()) ? null : dexFinder.mmKernelClass;
+            return getter.invoke(target);
+        } catch (Throwable e) {
+            log("调用取库方法失败: " + getter.getName() + " -> " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** 搜索上限，避免对象图异常庞大时长时间遍历。 */
+    private static final int WRAPPER_SEARCH_LIMIT = 200_000;
+
     private Object findDbWrapper(Object storage) {
         if (storage == null || dexFinder.sqliteDbWrapperClass == null) return null;
+        Class<?> target = dexFinder.sqliteDbWrapperClass;
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         ArrayDeque<Object> queue = new ArrayDeque<>();
         queue.add(storage);
+        int scanned = 0;
         while (!queue.isEmpty()) {
             Object current = queue.removeFirst();
             if (current == null || visited.contains(current)) continue;
             visited.add(current);
+            scanned++;
+            if (scanned > WRAPPER_SEARCH_LIMIT) break;
 
-            if (dexFinder.sqliteDbWrapperClass.isInstance(current)) {
+            if (target.isInstance(current)) {
+                log("数据库 wrapper 命中: " + current.getClass().getName() + "（扫描 " + scanned + " 个对象）");
                 return current;
             }
 
             Method method = findQueryMethod(current.getClass());
             if (method != null) {
+                log("数据库 wrapper 按查询方法命中: " + current.getClass().getName() + "（扫描 " + scanned + " 个对象）");
                 return current;
             }
 
             enqueueNestedObjects(current, queue, visited);
         }
+        // 定位失败时输出足够信息以便定位（所在 storage 类型、目标类、扫描规模）。
+        log("BFS 未命中 SqliteDB wrapper：storage=" + storage.getClass().getName()
+                + " target=" + target.getName() + "，已扫描 " + scanned + " 个对象");
         return null;
     }
 
     private void enqueueNestedObjects(Object source,
                                       ArrayDeque<Object> queue,
                                       Set<Object> visited) {
+        // Map / 集合 / 数组：部分微信版本会把数据库/storage 对象缓存于其中，必须展开。
+        try {
+            if (source instanceof Map) {
+                for (Object value : ((Map<?, ?>) source).values()) {
+                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                }
+            } else if (source instanceof Iterable) {
+                for (Object value : (Iterable<?>) source) {
+                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                }
+            } else if (source.getClass().isArray()) {
+                int length = java.lang.reflect.Array.getLength(source);
+                for (int i = 0; i < length; i++) {
+                    Object value = java.lang.reflect.Array.get(source, i);
+                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
         Class<?> cur = source.getClass();
         while (cur != null && cur != Object.class) {
-            for (Field field : KavaReflector.declaredFields(cur)) {
+            for (Field field : fieldsOf(cur)) {
                 try {
                     if (KavaReflector.isStatic(field)) continue;
                     Class<?> type = field.getType();
@@ -630,7 +916,7 @@ public final class WeChatDatabaseApi {
         Method best = null;
         Class<?> cur = wrapperClass;
         while (cur != null && cur != Object.class) {
-            for (Method method : KavaReflector.declaredMethods(cur)) {
+            for (Method method : methodsOf(cur)) {
                 if (!isQueryMethod(method)) continue;
                 if (best == null || queryPriority(method) > queryPriority(best)) {
                     best = method;
@@ -644,7 +930,7 @@ public final class WeChatDatabaseApi {
     private Method findUpdateMethod(Class<?> wrapperClass) {
         Class<?> cur = wrapperClass;
         while (cur != null && cur != Object.class) {
-            for (Method method : KavaReflector.declaredMethods(cur)) {
+            for (Method method : methodsOf(cur)) {
                 if (!isUpdateMethod(method)) continue;
                 return method;
             }
@@ -656,7 +942,7 @@ public final class WeChatDatabaseApi {
     private Method findDeleteMethod(Class<?> wrapperClass) {
         Class<?> cur = wrapperClass;
         while (cur != null && cur != Object.class) {
-            for (Method method : KavaReflector.declaredMethods(cur)) {
+            for (Method method : methodsOf(cur)) {
                 if (!isDeleteMethod(method)) continue;
                 return method;
             }
@@ -669,7 +955,7 @@ public final class WeChatDatabaseApi {
         List<Method> result = new ArrayList<>();
         Class<?> cur = wrapperClass;
         while (cur != null && cur != Object.class) {
-            for (Method method : KavaReflector.declaredMethods(cur)) {
+            for (Method method : methodsOf(cur)) {
                 if (!isInsertMethod(method)) continue;
                 result.add(method);
             }

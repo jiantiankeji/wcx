@@ -84,6 +84,7 @@ import h.Hchat.hooks.items.script.ScriptPluginRuntime
 import h.Hchat.hooks.items.script.ScriptPluginSettings
 import h.Hchat.hooks.items.script.market.PluginMarketPlugin
 import h.Hchat.hooks.items.script.market.PluginMarketRepository
+import h.Hchat.hooks.items.script.market.PluginMarketSettings
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.preferences.TermsGate
 import h.Hchat.ui.FeatureSettingsProvider
@@ -145,6 +146,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.RowScope
+import top.yukonga.miuix.kmp.basic.Card
+import com.Johnny.wcx.features.hchat.HchatScriptBootstrap
 
 
 private const val PRESS_RELEASE_DELAY_MS = 110L
@@ -187,6 +190,14 @@ private object NavIcons {
     val Close: ImageVector = navIcon(
         name = "Rounded.Close",
         path = "M18.3,5.71L12,12l6.3,6.29 -1.41,1.42L10.59,13.41 4.29,19.71 2.88,18.29 9.17,12 2.88,5.71 4.29,4.29 10.59,10.59 16.89,4.29z"
+    )
+    val Visibility: ImageVector = navIcon(
+        name = "Rounded.Visibility",
+        path = "M12,4.5C7,4.5 2.73,7.61 1,12c1.73,4.39 6,7.5 11,7.5s9.27,-3.11 11,-7.5c-1.73,-4.39 -6,-7.5 -11,-7.5zM12,17c-2.76,0 -5,-2.24 -5,-5s2.24,-5 5,-5 5,2.24 5,5 -2.24,5 -5,5zM12,9c-1.66,0 -3,1.34 -3,3s1.34,3 3,3 3,-1.34 3,-3 -1.34,-3 -3,-3z"
+    )
+    val VisibilityOff: ImageVector = navIcon(
+        name = "Rounded.VisibilityOff",
+        path = "M12,7c2.76,0 5,2.24 5,5 0,0.65 -0.13,1.26 -0.36,1.83l2.92,2.92c1.51,-1.26 2.7,-2.89 3.43,-4.75 -1.73,-4.39 -6,-7.5 -11,-7.5 -1.4,0 -2.74,0.25 -3.98,0.7l2.16,2.16C10.74,7.13 11.35,7 12,7zM2,4.27l2.28,2.28 0.46,0.46C3.08,8.3 1.78,10.02 1,12c1.73,4.39 6,7.5 11,7.5 1.55,0 3.03,-0.3 4.38,-0.84l0.42,0.42L19.73,22 21,20.73 3.27,3 2,4.27zM7.53,9.8l1.55,1.55c-0.05,0.21 -0.08,0.43 -0.08,0.65 0,1.66 1.34,3 3,3 0.22,0 0.44,-0.03 0.65,-0.08l1.55,1.55c-0.67,0.33 -1.41,0.53 -2.2,0.53 -2.76,0 -5,-2.24 -5,-5 0,-0.79 0.2,-1.53 0.53,-2.2zM11.84,9.02l3.15,3.15 0.02,-0.16c0,-1.66 -1.34,-3 -3,-3l-0.17,0.01z"
     )
     val History: ImageVector = navIcon(
         name = "Rounded.History",
@@ -619,7 +630,9 @@ fun ScriptPluginSettingsContent(
     context: Context,
     onOpenReadme: (ScriptPluginRuntime.ScriptPlugin) -> Unit,
     onOpenMarket: () -> Unit,
-    onOpenManager: () -> Unit
+    onOpenManager: () -> Unit,
+    onOpenDiagnostics: () -> Unit = {},
+    onOpenFaq: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val sp = remember { HchatStorage.preferences(context, ScriptPluginSettings.PREFS_NAME) }
@@ -656,7 +669,23 @@ fun ScriptPluginSettingsContent(
     }
 
     Column {
-        SettingsCard {
+        // 脚本功能诊断入口：脚本开关开不起来/脚本不工作时，从这里直接看状态与原因。
+        val apiReady = runCatching { WeChatApis.database() }.getOrNull() != null
+        val readinessDetail = runCatching { ScriptPluginRuntime.scriptApiReadinessDetail() }
+            .getOrNull().orEmpty()
+        SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+            ActionRow(
+                "脚本功能诊断",
+                if (apiReady) "运行时正常，可查看状态与日志" else "未就绪：${readinessDetail.ifBlank { "微信 API 未解析" }}",
+            ) { onOpenDiagnostics() }
+        }
+        SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+            ActionRow(
+                "脚本常见问题",
+                "开关打不开 / 插件启用失败 / 改脚本要不要重启，看这里",
+            ) { onOpenFaq() }
+        }
+        SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
             PathSwitchRow(
                 globalEnabled,
                 "插件总开关",
@@ -734,14 +763,26 @@ fun ScriptPluginSettingsContent(
                         showSettings = ScriptPluginRuntime.canOpenSettings(plugin),
                         onOpenReadme = { onOpenReadme(plugin) },
                         onOpenSettings = {
-                            val result = ScriptPluginRuntime.callOpenSettings(plugin.id)
-                            if (result.isFailure) {
-                                Toast.makeText(
-                                    context,
-                                    result.exceptionOrNull()?.message ?: "打开设置失败",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                            // 开关是开的、但本次启动未加载成功时，plugins 里没有它 → 先补加载再打开，
+                            // 避免「开关明明开着却提示插件未开启」。放到后台线程，避免 eval 阻塞 UI。
+                            Thread({
+                                var result = ScriptPluginRuntime.callOpenSettings(plugin.id)
+                                if (result.isFailure && ScriptPluginRuntime.isPluginEnabled(context, plugin.id)) {
+                                    runCatching { ScriptPluginRuntime.reloadPlugin(context, plugin.id) }
+                                    result = ScriptPluginRuntime.callOpenSettings(plugin.id)
+                                }
+                                val finalResult = result
+                                val enabled = ScriptPluginRuntime.isPluginEnabled(context, plugin.id)
+                                Handler(Looper.getMainLooper()).post {
+                                    if (finalResult.isFailure) {
+                                        val msg = finalResult.exceptionOrNull()?.message.orEmpty()
+                                        val text = if (msg.contains("插件未开启") && enabled) {
+                                            "插件尚未加载成功（微信数据库/预热可能未就绪），请稍后重试，或到「脚本功能诊断」点一键修复"
+                                        } else msg.ifBlank { "打开设置失败" }
+                                        Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }, "WCX-Script-OpenSettings").start()
                         },
                         onOpenManager = { actionPlugin = plugin },
                         onCheckedChange = { next ->
@@ -752,10 +793,14 @@ fun ScriptPluginSettingsContent(
                                 Handler(Looper.getMainLooper()).post {
                                     if (result.isFailure) {
                                         pluginEnabledStates = oldMap
+                                        val reason = result.exceptionOrNull()
+                                            ?.let { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }
+                                            .orEmpty()
+                                            .take(200)
                                         Toast.makeText(
                                             context,
-                                            "加载[${plugin.displayName ?: "未知"}]失败，已自动关闭",
-                                            Toast.LENGTH_SHORT
+                                            "加载[${plugin.displayName ?: "未知"}]失败: $reason",
+                                            Toast.LENGTH_LONG
                                         ).show()
                                     }
                                 }
@@ -1026,10 +1071,9 @@ fun ScriptPluginManagerPage(
         largeTitle = "本地插件管理",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        bottomBar = { BottomActionBar("返回", onBack) }
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            modifier = Modifier.fillMaxSize(),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
@@ -1454,7 +1498,16 @@ private fun ScriptPluginManagerRow(
                 translationY = visualDragY
                 shadowElevation = if (dragging) with(density) { 7.dp.toPx() } else 0f
                 shape = RoundedCornerShape(8.dp)
+                clip = true
             }
+            // 拖动中的行必须有不透明底色：否则它会透出下层行的文字，看起来像重影。
+            .then(
+                if (dragging) {
+                    Modifier.background(MiuixTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
+                } else {
+                    Modifier
+                }
+            )
             .fillMaxWidth()
             .onSizeChanged { itemHeightPx = it.height.toFloat() }
             .clickable { onSelectedChange(!selected) }
@@ -2551,36 +2604,230 @@ private fun openMarkdownLink(context: Context, url: String) {
 // ---------------------------------------------------------------------------
 
 
-/** 卡片容器。 */
+/** 市场服务器地址打码（保留协议头，隐藏主机与路径）。 */
+private fun maskServiceUrl(url: String): String {
+    val idx = url.indexOf("://")
+    return if (idx > 0) url.substring(0, idx + 3) + "••••••••••••" else "••••••••••••"
+}
+
+/**
+ * 市场服务器设置卡片。
+ *
+ * 地址默认打码隐藏，点击右侧「眼睛」显示原文；支持在「官方默认 / 备用 / 自定义」之间切换，
+ * 便于第三方服务器不可用或迁移到自建服务器时随时切换，无需重新发版。
+ */
+@Composable
+internal fun MarketServerSettingCard(context: Context) {
+    var reveal by remember { mutableStateOf(false) }
+    var showDialog by remember { mutableStateOf(false) }
+    var current by remember { mutableStateOf(PluginMarketSettings.serviceUrl(context)) }
+
+    SettingsCard {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "当前地址",
+                    color = MiuixTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = if (reveal) current else maskServiceUrl(current),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontSize = 12.sp,
+                )
+            }
+            Image(
+                imageVector = if (reveal) NavIcons.VisibilityOff else NavIcons.Visibility,
+                contentDescription = if (reveal) "隐藏地址" else "显示地址",
+                colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.onSurfaceVariantSummary),
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { reveal = !reveal }
+                    .padding(2.dp),
+            )
+        }
+        InsetDivider()
+        ActionRow("切换市场服务器", "官方默认 / 备用 / 自定义地址") { showDialog = true }
+    }
+
+    if (showDialog) {
+        MarketServerDialog(
+            context = context,
+            currentUrl = current,
+            onDismiss = { showDialog = false },
+            onSaved = {
+                current = PluginMarketSettings.serviceUrl(context)
+                showDialog = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun MarketServerDialog(
+    context: Context,
+    currentUrl: String,
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit,
+) {
+    val presets = PluginMarketSettings.presetServiceUrls()
+    var selected by remember { mutableStateOf(if (presets.contains(currentUrl)) currentUrl else "") }
+    var custom by remember { mutableStateOf(if (presets.contains(currentUrl)) "" else currentUrl) }
+
+    WindowDialog(
+        show = true,
+        title = "切换市场服务器",
+        onDismissRequest = onDismiss,
+        content = {
+            Column {
+                presets.forEach { url ->
+                    MarketServerOptionRow(
+                        title = PluginMarketSettings.presetLabel(url),
+                        summary = url,
+                        selected = selected == url,
+                        onClick = {
+                            selected = url
+                            custom = ""
+                        },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "自定义地址",
+                    color = MiuixTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium,
+                )
+                BasicTextField(
+                    value = custom,
+                    onValueChange = {
+                        custom = it.take(200)
+                        selected = ""
+                    },
+                    singleLine = true,
+                    textStyle = TextStyle(color = MiuixTheme.colorScheme.onSurface, fontSize = 14.sp),
+                    cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MiuixTheme.colorScheme.secondaryVariant)
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    TextButton(
+                        text = "取消",
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.textButtonColorsPrimary(),
+                    )
+                    TextButton(
+                        text = "保存",
+                        onClick = {
+                            val target = if (selected.isNotBlank()) selected else custom.trim().trimEnd('/')
+                            if (target.isBlank()) return@TextButton
+                            PluginMarketSettings.saveServiceUrl(context, target)
+                            onSaved()
+                        },
+                        enabled = selected.isNotBlank() || custom.trim().isNotBlank(),
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.textButtonColorsPrimary(),
+                    )
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun MarketServerOptionRow(
+    title: String,
+    summary: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) MiuixTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = MiuixTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = summary,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontSize = 11.sp,
+            )
+        }
+        if (selected) {
+            Text(
+                text = "✓",
+                color = MiuixTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+/** 卡片容器（圆角卡片，视觉对齐 Hchat）。 */
 @Composable
 internal fun SettingsCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    BasicComponent(modifier = modifier.fillMaxWidth(), onClick = null) {
+    Card(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        cornerRadius = 18.dp,
+    ) {
         Column { content() }
     }
 }
 
-/** 可点击的条目行（标题 + 摘要）。 */
+/** 可点击的条目行（标题 + 摘要 + 右侧 ›；圆角按压反馈，对齐 Hchat）。 */
 @Composable
 internal fun ActionRow(title: String, summary: String, onClick: () -> Unit) {
-    BasicComponent(onClick = onClick) {
-        Column {
+    var pressed by remember { mutableStateOf(false) }
+    val pressFeedbackColor = rememberPressFeedbackColor(pressed)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(pressFeedbackColor)
+            .responsiveTap(onClick = onClick, onPressedChange = { pressed = it })
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                fontSize = MiuixTheme.textStyles.headline1.fontSize,
+                color = MiuixTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.Medium,
-                color = BasicComponentDefaults.titleColor().color,
             )
             if (summary.isNotBlank()) {
                 Text(
                     text = summary,
-                    fontSize = MiuixTheme.textStyles.body2.fontSize,
-                    color = BasicComponentDefaults.summaryColor().color,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontSize = 12.sp,
                 )
             }
         }
+        Text(
+            text = "›",
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            fontSize = 22.sp,
+        )
     }
 }
 
@@ -2762,7 +3009,11 @@ internal fun PageScaffold(
                 }
                 topBarActions()
             }
-            content(PaddingValues(0.dp))
+            // 内容区用 weight(1f) 固定为「剩余高度」，保证内部 LazyColumn 拿到有界约束，
+            // 否则可能被按无界高度测量（滚动区间为 0，列表滑不动）。
+            Box(modifier = Modifier.weight(1f)) {
+                content(PaddingValues(0.dp))
+            }
         }
         if (bottomBar != null) {
             Box(
@@ -3475,30 +3726,19 @@ fun ScriptPluginMarketPage(
         largeTitle = "在线插件",
         scrollBehavior = scrollBehavior,
         topBarActions = {
+            TextButton(
+                text = "上传本地插件",
+                onClick = { showUploadDialog = true },
+                colors = ButtonDefaults.textButtonColorsPrimary()
+            )
             PluginMarketNotificationBell(
                 unreadCount = notificationUnreadCount,
                 onClick = ::openNotifications
             )
-        },
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "上传本地插件",
-                onPrimaryClick = { showUploadDialog = true },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
         }
     ) { padding ->
-        PullToRefresh(
-            isRefreshing = loading,
-            onRefresh = { if (!loading) refreshVersion++ },
-            modifier = Modifier.fillMaxSize(),
-            topAppBarScrollBehavior = scrollBehavior,
-            refreshTexts = listOf("下拉刷新", "松开刷新", "正在刷新", "刷新完成"),
-            contentPadding = PaddingValues(0.dp)
-        ) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            modifier = Modifier.fillMaxSize(),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
@@ -3586,7 +3826,7 @@ fun ScriptPluginMarketPage(
                 }
             }
         }
-        }
+        
     }
 
     selectedPlugin?.let { summary ->
@@ -5171,12 +5411,16 @@ fun ScriptPluginMiuixTabContent(
     onOpenManager: () -> Unit = {},
     onOpenMarket: () -> Unit = {},
     onOpenReadme: (ScriptPluginRuntime.ScriptPlugin) -> Unit = {},
+    onOpenDiagnostics: () -> Unit = {},
+    onOpenFaq: () -> Unit = {},
 ) {
     ScriptPluginSettingsMiuixContent.ScriptPluginSettingsContent(
         context = context,
         onOpenReadme = onOpenReadme,
         onOpenMarket = onOpenMarket,
         onOpenManager = onOpenManager,
+        onOpenDiagnostics = onOpenDiagnostics,
+        onOpenFaq = onOpenFaq,
     )
 }
 

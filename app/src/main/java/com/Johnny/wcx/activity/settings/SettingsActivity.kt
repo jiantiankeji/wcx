@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.materialsymbols.MaterialSymbols
@@ -179,6 +180,12 @@ private sealed interface SettingsNavTarget {
     data class Category(val name: String) : SettingsNavTarget
     data object License : SettingsNavTarget
     data object Acknowledgements : SettingsNavTarget
+    data object ScriptMarket : SettingsNavTarget
+    data object ScriptManager : SettingsNavTarget
+    data object ScriptDiagnostics : SettingsNavTarget
+    data object ScriptFaq : SettingsNavTarget
+    data object SecretFriendDiagnostics : SettingsNavTarget
+    data object ModuleHealth : SettingsNavTarget
 }
 
 @Composable
@@ -191,11 +198,17 @@ private fun SettingsRoot(onFinish: () -> Unit) {
                 onOpenCategory = { push(SettingsNavTarget.Category(it)) },
                 onOpenLicense = { push(SettingsNavTarget.License) },
                 onOpenAcknowledgements = { push(SettingsNavTarget.Acknowledgements) },
+                onOpenScriptMarket = { push(SettingsNavTarget.ScriptMarket) },
+                onOpenScriptManager = { push(SettingsNavTarget.ScriptManager) },
+                onOpenScriptDiagnostics = { push(SettingsNavTarget.ScriptDiagnostics) },
+                onOpenScriptFaq = { push(SettingsNavTarget.ScriptFaq) },
+                onOpenModuleHealth = { push(SettingsNavTarget.ModuleHealth) },
             )
 
             is SettingsNavTarget.Category -> CategoryDetailScreen(
                 categoryName = screen.name,
                 onBack = pop,
+                onOpenSecretFriendDiagnostics = { push(SettingsNavTarget.SecretFriendDiagnostics) },
             )
 
             SettingsNavTarget.License -> LicenseScreen(
@@ -205,6 +218,18 @@ private fun SettingsRoot(onFinish: () -> Unit) {
             SettingsNavTarget.Acknowledgements -> AcknowledgementsScreen(
                 onBack = pop,
             )
+
+            SettingsNavTarget.ScriptMarket -> ScriptMarketScreen(onBack = pop)
+
+            SettingsNavTarget.ScriptManager -> ScriptManagerScreen(onBack = pop)
+
+            SettingsNavTarget.ScriptDiagnostics -> ScriptDiagnosticsScreen(onBack = pop)
+
+            SettingsNavTarget.ScriptFaq -> ScriptFaqScreen(onBack = pop)
+
+            SettingsNavTarget.SecretFriendDiagnostics -> SecretFriendDiagnosticsScreen(onBack = pop)
+
+            SettingsNavTarget.ModuleHealth -> ModuleHealthScreen(onBack = pop)
         }
     }
 }
@@ -214,6 +239,11 @@ private fun MainPagerScreen(
     onOpenCategory: (String) -> Unit,
     onOpenLicense: () -> Unit,
     onOpenAcknowledgements: () -> Unit,
+    onOpenScriptMarket: () -> Unit,
+    onOpenScriptManager: () -> Unit,
+    onOpenScriptDiagnostics: () -> Unit,
+    onOpenScriptFaq: () -> Unit,
+    onOpenModuleHealth: () -> Unit,
 ) {
     val pagerState = rememberPagerState(pageCount = { 5 })
     val isDragged by pagerState.interactionSource.collectIsDraggedAsState()
@@ -237,9 +267,17 @@ private fun MainPagerScreen(
                 key = { it },
             ) { page ->
                 when (page) {
-                    0 -> HomePager(onOpenFeatures = { scope.launch { pagerState.animateScrollToPage(1) } })
+                    0 -> HomePager(
+                        onOpenFeatures = { scope.launch { pagerState.animateScrollToPage(1) } },
+                        onOpenModuleHealth = onOpenModuleHealth,
+                    )
                     1 -> FeaturesPager(onOpenCategory = onOpenCategory)
-                    2 -> ScriptsPager()
+                    2 -> ScriptsPager(
+                        onOpenMarket = onOpenScriptMarket,
+                        onOpenManager = onOpenScriptManager,
+                        onOpenDiagnostics = onOpenScriptDiagnostics,
+                        onOpenFaq = onOpenScriptFaq,
+                    )
                     3 -> LogsPager()
                     else -> SettingsPager(onOpenLicense = onOpenLicense, onOpenAcknowledgements = onOpenAcknowledgements)
                 }
@@ -334,6 +372,8 @@ fun MiuixListScaffold(
     // 关闭后顶栏使用不透明底色、列表不再注册为模糊源，用于规避特定页面（内容为单个超高 item）
     // 在滚动时 backdrop 采样越界导致的顶部灰块。
     blurTopBar: Boolean = true,
+    // 内容左右内边距。脚本 Tab 内嵌 Hchat 内容（其 SettingsCard 自带 12dp），此处传 0 避免双重内边距。
+    horizontalPadding: Dp = 12.dp,
     content: LazyListScope.() -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -375,7 +415,7 @@ fun MiuixListScaffold(
                 .scrollEndHaptic()
                 .overScrollVertical()
                 .nestedScroll(scrollBehavior.nestedScrollConnection)
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = horizontalPadding),
             contentPadding = innerPadding,
             overscrollEffect = null,
             content = content,

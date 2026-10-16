@@ -30,6 +30,9 @@ import com.Johnny.wcx.utils.WeLogger
 )
 object HideRecentForward : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryListener {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideRecentForward"
 
     private val methodTransmitListInstaller by dexMethod(allowFailure = true) {
@@ -79,6 +82,9 @@ object HideRecentForward : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.I
 )
 object HideStatusPage : SwitchFeature(), IResolveDex {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideStatusPage"
 
     private val methodStatusListInstaller by dexMethod(allowFailure = true) {
@@ -109,6 +115,9 @@ object HideStatusPage : SwitchFeature(), IResolveDex {
 )
 object HideStorageRecords : SwitchFeature(), IResolveDex {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideStorageRecords"
 
     private val methodCleanRecordListInstaller by dexMethod(allowFailure = true) {
@@ -132,6 +141,9 @@ object HideStorageRecords : SwitchFeature(), IResolveDex {
     description = "存储空间页面不再显示密友的缓存条目（结构式实现，微信版本变化时自动跳过）"
 )
 object HideStorageCache : SwitchFeature(), IResolveDex {
+
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
 
     private const val TAG = "HideStorageCache"
 

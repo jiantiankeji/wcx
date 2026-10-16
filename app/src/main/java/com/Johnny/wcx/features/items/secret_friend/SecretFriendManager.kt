@@ -32,6 +32,13 @@ object SecretFriendManager : ClickableFeature() {
     /** 默认开启：从未操作过该开关的用户，密友功能照常按各自开关工作。 */
     override val defaultEnabled: Boolean = true
 
+    /**
+     * 本行不显示开关：密友功能的唯一总开关是「密友功能」分类页顶部的总开关
+     * （[com.Johnny.wcx.constants.Preferences.secretFriendMasterEnabled]）。
+     * 本行只作为「编辑密友名单」入口，避免出现两个互相矛盾的总开关。
+     */
+    override val noSwitchWidget: Boolean = true
+
     override fun onClick(context: ComponentActivity) = openSelector(context)
 
     /** 打开密友名单选择器；任意 Context 可用（供 #my# 面板等入口复用）。 */

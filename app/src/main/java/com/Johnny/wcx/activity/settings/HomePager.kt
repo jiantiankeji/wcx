@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
@@ -186,7 +188,7 @@ private fun safeOpenUrl(context: Context, url: String) {
 }
 
 @Composable
-fun HomePager(onOpenFeatures: () -> Unit) {
+fun HomePager(onOpenFeatures: () -> Unit, onOpenModuleHealth: () -> Unit) {
     val context = LocalContext.current
     val enabledCount = remember {
         FeaturesProvider.ALL_HOOK_ITEMS.count { WePrefs.getBoolOrFalse(it.name) }
@@ -297,6 +299,42 @@ fun HomePager(onOpenFeatures: () -> Unit) {
                     label = "全部功能",
                     onClick = onOpenFeatures,
                 )
+            }
+        }
+
+        // ---- 模块自检入口 ----
+        item {
+            Spacer(Modifier.height(8.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenModuleHealth() },
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = MaterialSymbols.Outlined.Build_circle,
+                        contentDescription = null,
+                        tint = MiuixTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "模块自检",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MiuixTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "检测整个模块的公共依赖与锚点，快速定位哪些功能失效",
+                            fontSize = 12.sp,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
             }
         }
 

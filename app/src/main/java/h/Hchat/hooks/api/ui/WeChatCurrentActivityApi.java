@@ -37,6 +37,12 @@ public final class WeChatCurrentActivityApi {
             Method onResume = KavaReflector.findDeclaredMethod(Activity.class, "onResume");
             Method onPause = KavaReflector.findDeclaredMethod(Activity.class, "onPause");
             Method onDestroy = KavaReflector.findDeclaredMethod(Activity.class, "onDestroy");
+            if (onResume == null || onPause == null || onDestroy == null) {
+                log("当前Activity Hook失败: Activity 生命周期方法未找到 (onResume="
+                        + (onResume != null) + ", onPause=" + (onPause != null)
+                        + ", onDestroy=" + (onDestroy != null) + ")");
+                return;
+            }
             HookRegistry.get().hook(onResume, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {

@@ -190,16 +190,28 @@ object TabTheme : ClickableFeature() {
             try {
             val activity = thisObject.reflekt()
                 .firstField { type = "com.tencent.mm.ui.MMFragmentActivity" }
-                .get()!! as Activity
+                .get() as? Activity
+            if (activity == null) {
+                WeLogger.i(TAG, "主屏美化：未从 MainTabUI 取到宿主 Activity 字段，本次跳过")
+                return@hookAfter
+            }
             // 主题只属于 LauncherUI 的四个主 Tab，绝不能在 ChattingUI 等子页面创建全屏图片层。
             if (activity.javaClass.name != "com.tencent.mm.ui.LauncherUI") return@hookAfter
 
             val viewPager = thisObject.reflekt()
                 .firstField { name = "mViewPager" }
-                .get()!! as ViewGroup
+                .get() as? ViewGroup
+            if (viewPager == null) {
+                WeLogger.i(TAG, "主屏美化：未找到 mViewPager 字段，本次跳过（微信 8.x 内部结构可能已变化）")
+                return@hookAfter
+            }
             val tabsAdapter = thisObject.reflekt()
                 .firstField { name = "mTabsAdapter" }
-                .get()!!
+                .get()
+            if (tabsAdapter == null) {
+                WeLogger.i(TAG, "主屏美化：未找到 mTabsAdapter 字段，本次跳过")
+                return@hookAfter
+            }
 
             val currentTabState = mutableIntStateOf(0)
             tabsAdapter.reflekt()

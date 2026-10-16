@@ -24,6 +24,12 @@ object KavaReflector {
     @JvmStatic
     fun declaredConstructors(clazz: Class<*>?): List<Constructor<*>> {
         if (clazz == null) return emptyList()
+        // 原生反射优先：KavaRef 的 resolve() 在模块进程内会静默返回空列表，
+        // 依赖方拿到空/ null 后会在 hook 处抛 NPE（历史故障根因）。
+        val native = runCatching {
+            clazz.declaredConstructors.map { it.also { c -> runCatching { c.isAccessible = true } } }
+        }.getOrDefault(emptyList())
+        if (native.isNotEmpty()) return native
         return runCatching {
             clazz.resolve().optional(silent = true).constructor { }.map { it.self.accessible() }
         }.getOrDefault(emptyList())
@@ -32,6 +38,10 @@ object KavaReflector {
     @JvmStatic
     fun declaredMethods(clazz: Class<*>?): List<Method> {
         if (clazz == null) return emptyList()
+        val native = runCatching {
+            clazz.declaredMethods.map { it.also { m -> runCatching { m.isAccessible = true } } }
+        }.getOrDefault(emptyList())
+        if (native.isNotEmpty()) return native
         return runCatching {
             clazz.resolve().optional(silent = true).method { }.map { it.self.accessible() }
         }.getOrDefault(emptyList())
@@ -40,6 +50,10 @@ object KavaReflector {
     @JvmStatic
     fun declaredFields(clazz: Class<*>?): List<Field> {
         if (clazz == null) return emptyList()
+        val native = runCatching {
+            clazz.declaredFields.map { it.also { f -> runCatching { f.isAccessible = true } } }
+        }.getOrDefault(emptyList())
+        if (native.isNotEmpty()) return native
         return runCatching {
             clazz.resolve().optional(silent = true).field { }.map { it.self.accessible() }
         }.getOrDefault(emptyList())
@@ -48,6 +62,12 @@ object KavaReflector {
     @JvmStatic
     fun findConstructor(clazz: Class<*>?, vararg parameterTypes: Class<*>): Constructor<*>? {
         if (clazz == null) return null
+        runCatching {
+            clazz.getDeclaredConstructor(*parameterTypes).let { c ->
+                runCatching { c.isAccessible = true }
+                return c
+            }
+        }
         return runCatching {
             clazz.resolve().optional(silent = true).firstConstructorOrNull {
                 parameters(*parameterTypes)
@@ -58,6 +78,12 @@ object KavaReflector {
     @JvmStatic
     fun findDeclaredField(clazz: Class<*>?, name: String?): Field? {
         if (clazz == null || name.isNullOrEmpty()) return null
+        runCatching {
+            clazz.getDeclaredField(name).let { f ->
+                runCatching { f.isAccessible = true }
+                return f
+            }
+        }
         return runCatching {
             clazz.resolve().optional(silent = true).firstFieldOrNull {
                 this.name = name
@@ -68,6 +94,21 @@ object KavaReflector {
     @JvmStatic
     fun findDeclaredMethod(clazz: Class<*>?, name: String?, vararg parameterTypes: Class<*>): Method? {
         if (clazz == null || name.isNullOrEmpty()) return null
+        runCatching {
+            clazz.getDeclaredMethod(name, *parameterTypes).let { m ->
+                runCatching { m.isAccessible = true }
+                return m
+            }
+        }
+        runCatching {
+            clazz.declaredMethods.firstOrNull { m ->
+                m.name == name && m.parameterTypes.size == parameterTypes.size &&
+                    m.parameterTypes.indices.all { m.parameterTypes[it] == parameterTypes[it] }
+            }?.let { m ->
+                runCatching { m.isAccessible = true }
+                return m
+            }
+        }
         return runCatching {
             clazz.resolve().optional(silent = true).firstMethodOrNull {
                 this.name = name

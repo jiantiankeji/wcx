@@ -82,7 +82,119 @@ object DexInstallScheduler {
             if (current >= stage.level) break
             if (readyLevel.compareAndSet(current, stage.level)) break
         }
+        resetExhaustedRetries()
         runReadyStates()
+    }
+
+    /**
+     * 把此前「重试耗尽、尚未安装」的任务计数归零并重新排队，让失败任务有机会恢复。
+     *
+     * 供「脚本一键修复 / 重新初始化」等入口调用；阶段推进（[advanceReady]）内部也会自动调用一次。
+     */
+    @JvmStatic
+    fun retryPending() = synchronized(stateLock) {
+        resetExhaustedRetries()
+        runReadyStates()
+    }
+
+    /**
+     * 一键修复：把**全部未安装**任务（含仍在重试与已暂停的）失败计数清零并立即重排。
+     * 比 [retryPending]（只处理已暂停的）更彻底，供「一键修复 / 重新初始化脚本子系统」调用。
+     */
+    @JvmStatic
+    fun retryAllPending() = synchronized(stateLock) {
+        states.values.forEach { s ->
+            if (!s.installed.get() && s.installer != null && !s.running.get()) {
+                s.retryIndex.set(0)
+                s.retryScheduled.set(false)
+                s.retryTask?.let(mainHandler::removeCallbacks)
+                s.retryTask = null
+            }
+        }
+        runReadyStates()
+    }
+
+    /**
+     * 强制把就绪阶段推进到 WARMUP。
+     * 供一键修复：即便 `wechat_api:warmup` 任务没跑成、阶段卡在 BRIDGE，也让脚本的
+     * 菜单 / 消息 / 发送按钮等 WARMUP 级 Hook 有机会被安装（否则它们永远不会被尝试）。
+     */
+    @JvmStatic
+    fun ensureWarmupReady() {
+        advanceReady(Stage.BRIDGE)
+        advanceReady(Stage.WARMUP)
+    }
+
+    /** 任务快照（诊断页用）：逐个 Hook 安装任务当前的真实状态。 */
+    data class TaskStatus(
+        val key: String,
+        val label: String,
+        val stage: String,
+        val installed: Boolean,
+        val running: Boolean,
+        val retryIndex: Int,
+        val paused: Boolean,
+    ) {
+        val summary: String
+            get() = when {
+                installed -> "✅ 已安装"
+                running -> "⏳ 安装中"
+                paused -> "❌ 失败·已暂停（可一键修复）"
+                else -> "⚠ 待重试（第 " + retryIndex + " 次）"
+            }
+    }
+
+    /** 当前就绪阶段名。 */
+    @JvmStatic
+    fun readyLevelName(): String = when (readyLevel.get()) {
+        0 -> "EARLY（早期）"
+        1 -> "BRIDGE（桥接就绪）"
+        2 -> "WARMUP（预热就绪）"
+        else -> "未知"
+    }
+
+    /** 所有任务的状态快照（未安装的排前面）。 */
+    @JvmStatic
+    fun snapshot(): List<TaskStatus> = synchronized(stateLock) {
+        states.entries
+            .map { (key, s) ->
+                TaskStatus(
+                    key = key,
+                    label = s.label,
+                    stage = s.stage.name,
+                    installed = s.installed.get(),
+                    running = s.running.get(),
+                    retryIndex = s.retryIndex.get(),
+                    paused = !s.installed.get() && s.installer != null &&
+                            s.retryIndex.get() >= MAX_RETRY_ATTEMPTS,
+                )
+            }
+            .sortedWith(compareBy({ it.installed }, { it.stage }, { it.key }))
+    }
+
+    /** 尚未安装（含待重试与已暂停）的任务数。 */
+    @JvmStatic
+    fun pendingCount(): Int = synchronized(stateLock) {
+        states.values.count { !it.installed.get() }
+    }
+
+    /** 已暂停（重试耗尽仍未装成、可一键修复恢复）的任务数。 */
+    @JvmStatic
+    fun failedCount(): Int = synchronized(stateLock) {
+        states.values.count {
+            !it.installed.get() && it.installer != null && it.retryIndex.get() >= MAX_RETRY_ATTEMPTS
+        }
+    }
+
+    /** 阶段推进与一键修复共用的恢复点：重试次数已达上限、但仍未安装且保留 installer 的任务，计数归零。 */
+    private fun resetExhaustedRetries() = synchronized(stateLock) {
+        states.values.forEach { state ->
+            if (!state.installed.get() && state.installer != null &&
+                state.retryIndex.get() >= MAX_RETRY_ATTEMPTS
+            ) {
+                state.retryIndex.set(0)
+            }
+        }
     }
 
     fun markInstalled(key: String) = synchronized(stateLock) {
@@ -182,9 +294,10 @@ object DexInstallScheduler {
         if (!state.retryScheduled.compareAndSet(false, true)) return
         val index = state.retryIndex.getAndIncrement()
         if (index >= MAX_RETRY_ATTEMPTS) {
+            // 不永久放弃：保留 installer，仅暂停本轮；阶段推进 / retryPending() 会重置计数后再试，
+            // 避免「一次性失败后永久卡死」（微信启动早期 DexKit 尚未就绪时尤其明显）。
             state.retryScheduled.set(false)
-            state.installer = null
-            HLog.e("$TAG ${state.label} 多次安装失败，停止本轮重试")
+            HLog.e("$TAG ${state.label} 重试 $index 次仍未成功，暂停本轮重试（阶段推进 / 一键修复可再恢复）")
             return
         }
         val retry = Runnable {

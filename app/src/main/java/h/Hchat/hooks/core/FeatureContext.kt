@@ -1,7 +1,6 @@
 package h.Hchat.hooks.core
 
 import android.content.Context
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import h.Hchat.dexkit.DexBridgeHolder
 import h.Hchat.dexkit.DexFinder
 import h.Hchat.event.EventBus
@@ -16,7 +15,10 @@ class FeatureContext(
     private val hostContext: Context,
     private val moduleContext: Context,
     private val hostClassLoader: ClassLoader,
-    private val loadPackageParam: XC_LoadPackage.LoadPackageParam,
+    // 注：WCX 只跑在 libxposed(lsp10x) 入口下，宿主不会产生 legacy Xposed 的
+    // LoadPackageParam 对象；且本对象在全仓库没有任何读取方，故类型放宽为 Any?，
+    // 由引导层传 null —— 避免为了构造它而中断整条脚本引导链路。
+    private val loadPackageParam: Any?,
     private val dexKitBridge: DexKitBridge,
     private val dexFinder: DexFinder,
     private val eventBus: EventBus,
@@ -30,7 +32,7 @@ class FeatureContext(
 
     fun hostClassLoader(): ClassLoader = hostClassLoader
 
-    fun loadPackageParam(): XC_LoadPackage.LoadPackageParam = loadPackageParam
+    fun loadPackageParam(): Any? = loadPackageParam
 
     fun dexKitBridge(): DexKitBridge = dexKitBridge
 

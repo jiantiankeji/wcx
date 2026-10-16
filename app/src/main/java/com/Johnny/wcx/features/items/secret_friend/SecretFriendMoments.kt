@@ -34,6 +34,9 @@ import com.Johnny.wcx.utils.reflection.BString
 )
 object HideMoments : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryListener {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideMoments"
 
     // 在朋友圈信息流中隐藏密友发布的帖子; EnhanceQuery 会把信息流标记替换为 (1=1)

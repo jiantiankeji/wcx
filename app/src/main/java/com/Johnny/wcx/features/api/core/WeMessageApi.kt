@@ -106,7 +106,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             methods {
                 add {
                     paramCount = 2
-                    usingStrings("worker thread has not been se", "MicroMsg.NetSceneQueue")
+                    usingStrings("worker thread has not been set", "MicroMsg.NetSceneQueue")
                 }
             }
         }
@@ -300,7 +300,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     }
     private val classVfs by dexClass {
         matcher {
-            usingStrings("MicroMsg.VFSFileOp", "Cannot resolve path or URI")
+            usingStrings("MicroMsg.VFSFileOp", "Cannot resolve path or URI: ")
         }
     }
     private val classPathUtil by dexClass {
@@ -323,7 +323,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     }
     private val classMmKernel by dexClass {
         matcher {
-            usingStrings("MicroMsg.MMKernel", "Initialize skeleton")
+            usingStrings("MicroMsg.MMKernel", "Initialize skeleton, create whole world.")
         }
     }
     private val methodMmKernelGetStorage by dexMethod(allowMultiple = true) {
@@ -973,7 +973,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         return try {
             WeLogger.i(TAG, "sending location: $x,$y to $toUser")
             val locJson = """{"msg":{"location":{"poiname":"$poiName","label":"$label","x":"$x","y":"$y","scale":"$scale"}}}"""
-            val netScene = ctorNetSceneSendMsgLocation.newInstance(toUser, locJson, 1, 0, null)
+            val netScene = newSendMsgSceneInstance(ctorNetSceneSendMsgLocation.constructor, toUser, locJson)
             WeNetSceneApi.sendNetScene(netScene)
             true
         } catch (e: Exception) {
@@ -991,7 +991,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             json2.put("nickname", nickname)
             json2.put("certflag", if (cardWxId.startsWith("gh_")) 4928270286903575946L else 4928270274018674058L)
             json1.put("msg", json2)
-            val netScene = ctorNetSceneSendMsgLocation.newInstance(toUser, json1.toString(), 1, 0, null)
+            val netScene = newSendMsgSceneInstance(ctorNetSceneSendMsgLocation.constructor, toUser, json1.toString())
             WeNetSceneApi.sendNetScene(netScene)
             true
         } catch (e: Exception) {
@@ -1169,11 +1169,96 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     }
 
     /** 发送文本消息 */
+    /**
+     * 构造 NetSceneSendMsg 实例。
+     *
+     * 微信 8.0.79+ 的构造器在末尾多了一个 msgSource(String) 参数（共 6 参），
+     * 旧版为 5 参。早期实现写死 5 参，遇到 6 参宿主会抛 IllegalArgumentException
+     * 被上层 catch 后表现为「复读/发送失败」。这里按实际构造器参数个数自适应。
+     */
+    private fun newSendMsgSceneInstance(clazz: Class<*>, toUser: String, content: String): Any? {
+        // 微信 8.0.79 的 NetSceneSendMsg 只有 ()V、(J I String)V 以及两个 6 参构造器，
+        // 早期写死的 5 参调用会直接抛「找不到构造器」。这里按「首参为 String」过滤后
+        // 从参数多到少逐个尝试，任一成功即返回，避免依赖构造器的反射顺序。
+        val filtered = clazz.constructors
+            .filter { it.parameterTypes.isNotEmpty() && it.parameterTypes[0] == String::class.java }
+            .sortedByDescending { it.parameterCount }
+        val candidates = if (filtered.isNotEmpty()) filtered else clazz.constructors.toList()
+        for (ctor in candidates) {
+            val args = buildSendMsgCtorArgs(ctor, toUser, content) ?: continue
+            val obj = runCatching { ctor.newInstance(*args) }.getOrElse {
+                WeLogger.w(TAG, "NetSceneSendMsg 构造失败(${ctor.toGenericString()}): ${it.message}")
+                null
+            }
+            if (obj != null) return obj
+        }
+        WeLogger.e(
+            TAG,
+            "未找到可用的 NetSceneSendMsg 构造器；候选=" +
+                clazz.constructors.joinToString(" | ") { it.toGenericString() },
+        )
+        return null
+    }
+
+    /** 按实际构造器参数个数自适应地构造「位置/名片」用的 NetSceneSendMsg 实例。 */
+    private fun newSendMsgSceneInstance(ctor: java.lang.reflect.Constructor<*>, toUser: String, content: String): Any {
+        val args = buildSendMsgCtorArgs(ctor, toUser, content)
+            ?: error("unsupported NetSceneSendMsg constructor: ${ctor.toGenericString()}")
+        return ctor.newInstance(*args)
+    }
+
+    /**
+     * 依据构造器的真实形参类型构造实参，兼容微信 8.0.79 的 6 参形态
+     * (String,String,int,int,long|Object,String) 与旧版 5 参形态。
+     */
+    private fun buildSendMsgCtorArgs(
+        ctor: java.lang.reflect.Constructor<*>,
+        toUser: String,
+        content: String,
+    ): Array<Any?>? {
+        val types = ctor.parameterTypes
+        if (types.size < 5) return null
+        val args = arrayOfNulls<Any?>(types.size)
+        for (i in types.indices) {
+            val t = types[i]
+            args[i] = when {
+                t == String::class.java -> when (i) {
+                    0 -> toUser
+                    1 -> content
+                    else -> null
+                }
+                t == java.lang.Integer.TYPE || t == java.lang.Integer::class.java -> if (i == 2) 1 else 0
+                t == java.lang.Long.TYPE || t == java.lang.Long::class.java -> 0L
+                t == java.lang.Boolean.TYPE || t == java.lang.Boolean::class.java -> false
+                t == java.lang.Byte.TYPE || t == java.lang.Byte::class.java -> 0.toByte()
+                t == java.lang.Character.TYPE || t == java.lang.Character::class.java -> '\u0000'
+                else -> null
+            }
+        }
+        return args
+    }
+
+    /** 供诊断页展示：发送文本（NetSceneSendMsg）类定位与构造器自检结果。 */
+    fun sendTextDiagnostics(): String {
+        return runCatching {
+            val clazz = classNetSceneSendMsg.clazz
+            val ctors = clazz.constructors.joinToString(" / ") { c ->
+                "(" + c.parameterTypes.joinToString(",") { it.simpleName } + ")"
+            }
+            val usable = clazz.constructors.any {
+                it.parameterCount >= 5 && it.parameterTypes.isNotEmpty() &&
+                    it.parameterTypes[0] == String::class.java
+            }
+            val state = if (usable) "是" else "✗ 否（无可用构造器）"
+            "类=${clazz.name}｜构造器=[$ctors]｜可发送=$state"
+        }.getOrElse { "✗ 未解析（${it.javaClass.simpleName}: ${it.message}）" }
+    }
+
     fun sendText(toUser: String, text: String): Boolean {
         return try {
             WeLogger.i(TAG, "sending text message: $text")
             val sendMsgObject = methodGetSendMsgObject.method.invoke(null) ?: return false
-            val msgObj = classNetSceneSendMsg.clazz.createInstance(toUser, text, 1, 0, null)
+            val msgObj = newSendMsgSceneInstance(classNetSceneSendMsg.clazz, toUser, text) ?: return false
             methodPostToQueue.method.invoke(sendMsgObject, msgObj) as? Boolean ?: false
         } catch (e: Exception) {
             WeLogger.e(TAG, "failed to send text message", e)

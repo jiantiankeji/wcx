@@ -54,6 +54,9 @@ import com.Johnny.wcx.utils.android.showToast
 object HideMyMoments : SwitchFeature(), IResolveDex, WeMomentsContextMenuApi.IMenuItemsProvider,
     WeDatabaseListenerApi.IQueryListener {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideMyMoments"
 
     /** 已隐藏朋友圈 snsId 列表（独立存储键）。 */

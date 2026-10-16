@@ -14,42 +14,41 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.items.script.ScriptPluginRuntime
-import h.Hchat.ui.miuix.ScriptPluginManagerTabPage
-import h.Hchat.ui.miuix.PluginMarketUi
 import h.Hchat.ui.miuix.ScriptPluginMiuixTabContent
 import h.Hchat.ui.miuix.ScriptPluginReadmeTabDialog
 
 /**
- * 「脚本」独立页 —— WCX 专属脚本插件中心：
- * 插件总开关 / 插件列表（启用开关 + 操作菜单）/ 本地插件管理页 / 在线插件市场 / README 弹窗。
- * 数据与逻辑走已内置的脚本子系统（ScriptPluginRuntime / ScriptPluginManager / PluginMarketRepository）。
- * 在线插件页为 Hchat 原版 UI 整段移植（PluginMarketUi.ScriptPluginMarketPage）。
+ * 「脚本」独立页 —— WCX 专属脚本插件中心。
+ *
+ * 子页面（在线插件 / 本地插件管理 / 脚本功能诊断）通过设置页导航栈整页跳转，
+ * 与 Hchat 的观感一致（不再使用 Dialog 覆盖层）。
  */
 @Composable
-fun ScriptsPager() {
+fun ScriptsPager(
+    onOpenMarket: () -> Unit = {},
+    onOpenManager: () -> Unit = {},
+    onOpenDiagnostics: () -> Unit = {},
+    onOpenFaq: () -> Unit = {},
+) {
     val context = LocalContext.current
-    var showManager by remember { mutableStateOf(false) }
-    var showMarket by remember { mutableStateOf(false) }
     var readmePlugin by remember { mutableStateOf<ScriptPluginRuntime.ScriptPlugin?>(null) }
 
-    when {
-        showMarket -> PluginMarketUi.ScriptPluginMarketPage(context = context, onBack = { showMarket = false })
-        showManager -> ScriptPluginManagerTabPage(context = context, onBack = { showManager = false })
-        else -> MiuixListScaffold(title = "脚本", blurTopBar = false) {
-            item {
-                // 父级 Pager 与内层 TopAppBar 各有一层 backdrop；内容滚动越界会被采样成顶部灰块，这里裁剪掉溢出绘制。
-                Box(modifier = Modifier.fillMaxWidth().clipToBounds()) {
-                    ScriptPluginMiuixTabContent(
-                        context = context,
-                        onOpenManager = { showManager = true },
-                        onOpenReadme = { plugin -> readmePlugin = plugin },
-                        onOpenMarket = { showMarket = true },
-                    )
-                }
+    MiuixListScaffold(title = "脚本", blurTopBar = false, horizontalPadding = 0.dp) {
+        item {
+            // 父级 Pager 与内层 TopAppBar 各有一层 backdrop；内容滚动越界会被采样成顶部灰块，这里裁剪掉溢出绘制。
+            Box(modifier = Modifier.fillMaxWidth().clipToBounds()) {
+                ScriptPluginMiuixTabContent(
+                    context = context,
+                    onOpenManager = onOpenManager,
+                    onOpenReadme = { plugin -> readmePlugin = plugin },
+                    onOpenMarket = onOpenMarket,
+                    onOpenDiagnostics = onOpenDiagnostics,
+                    onOpenFaq = onOpenFaq,
+                )
             }
-            item {
-                Spacer(Modifier.height(CONTENT_BOTTOM_INSET))
-            }
+        }
+        item {
+            Spacer(Modifier.height(CONTENT_BOTTOM_INSET))
         }
     }
 

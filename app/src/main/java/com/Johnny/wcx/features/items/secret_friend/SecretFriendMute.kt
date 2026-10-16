@@ -22,6 +22,9 @@ import com.Johnny.wcx.utils.WeLogger
 )
 object MuteSecretFriend : SwitchFeature() {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "MuteSecretFriend"
 
     private val listChangedListener = { ensureAllSecretsMuted() }

@@ -53,12 +53,15 @@ object WeLauncher {
             FeaturesLoader.loadFeatures()
         }.onFailure { WeLogger.e(TAG, "failed to load hooks", it) }
 
-        // 接入 Hchat 脚本子系统（脚本插件运行时 + 公共微信 API）。
-        // 仅在主进程安装；DexKit 在安装过程中按需创建。
+        // 接入 Hchat 脚本子系统（脚本插件运行时 + 公共微信 API）。仅在主进程安装。
+        // 必须放到后台线程：安装过程会创建 DexKitBridge 并解析整包 dex（重 IO/CPU），
+        // 在主线程同步执行会拖慢微信冷启动，表现为「先白屏一会、然后明显卡顿」。
         if (TargetProcesses.isInMain) {
-            runCatching {
-                HchatScriptBootstrap.install()
-            }.onFailure { WeLogger.e(TAG, "failed to install Hchat script subsystem", it) }
+            Thread({
+                runCatching {
+                    HchatScriptBootstrap.install()
+                }.onFailure { WeLogger.e(TAG, "failed to install Hchat script subsystem", it) }
+            }, "Hchat-Bootstrap").apply { isDaemon = true }.start()
         }
     }
 

@@ -27,7 +27,7 @@ import h.Hchat.utils.HLog;
  */
 public class WechatApiFeature implements Feature {
     public static final String ID = "wechat_api";
-    private static final String TAG = "[WCX:WechatApi]";
+    private static final String TAG = "[Hchat:WechatApi]";
 
     @Override
     public String featureId() {
@@ -63,7 +63,9 @@ public class WechatApiFeature implements Feature {
         WeChatMessageApi messageApi = new WeChatMessageApi(
                 context.dexFinder(), dispatcher, accountApi, contactApi, messageStoreApi, context.eventBus(), this::log);
         WeChatLocalMessageApi localMessageApi = new WeChatLocalMessageApi(context.dexFinder(), this::log);
-        localMessageApi.installCreateTimeHook();
+        // 这三个 hook 装必须在 WeChatApis.init 之前执行，但绝不能因为它们失败而跳过 init，
+        // 否则 WeChatApis.database()/account() 永远为 null，脚本会一直提示「数据库尚未就绪」。
+        installApiHook("localMessageCreateTime", localMessageApi::installCreateTimeHook);
         WeChatConversationApi conversationApi = new WeChatConversationApi(
                 databaseApi, contactApi, notifyApi, context.dexFinder(), this::log);
         WeChatUserApi userApi = new WeChatUserApi(accountApi, contactApi, this::log);
@@ -106,8 +108,8 @@ public class WechatApiFeature implements Feature {
         WeChatSnsApi snsApi = new WeChatSnsApi(
                 context.hostContext(), context.dexFinder(), context.hostClassLoader(),
                 context.dexKitBridge(), networkApi, accountApi, contactApi, context, this::log);
-        networkApi.installNetworkHook(context.dexFinder());
-        messageEventApi.installAddMsgHook();
+        installApiHook("networkHook", () -> networkApi.installNetworkHook(context.dexFinder()));
+        installApiHook("addMsgHook", messageEventApi::installAddMsgHook);
         installApiHook("databaseChanges", databaseListenerApi::install);
         installApiHook("messageChanges", messageChangeApi::install);
         installApiHook("conversationChanges", conversationChangeApi::install);

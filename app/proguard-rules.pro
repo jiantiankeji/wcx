@@ -114,3 +114,31 @@
 # (kotlin.metadata.*)，运行环境不提供该依赖。禁用 R8 缺失类告警，不影响常规 JS 功能。
 -dontwarn kotlin.metadata.**
 -dontwarn org.mozilla.kotlin.**
+# ─── Hchat 脚本子系统：R8 不可见的「按类名解析」引用 ─────────────────
+# BeanShell 用户脚本引擎：脚本与 API 前置代码在运行时按【原始类名】解析类，
+# R8 静态分析看不到这类引用，会把类重命名/裁掉，表现为
+# 「Class: Xxx not found in namespace」导致所有插件加载失败。
+-keep class bsh.** { *; }
+# 脚本 API 前置代码（ScriptPluginRuntime 内以字符串 eval）按名导入的类
+-keep class org.luckypray.dexkit.DexKitBridge { *; }
+-keep class me.hd.wauxv.** { *; }
+# 脚本 ABI 强引用锚点：以真实类型引用这些只被脚本按类名引用的类，避免 R8 裁剪/改名
+-keep class h.Hchat.hooks.items.script.ScriptPluginAbi { *; }
+-keep class me.hd.wauxv.plugin.api.callback.** { *; }
+-keep class me.hd.wauxv.data.bean.** { *; }
+-keep class me.hd.wauxv.data.bean.info.** { *; }
+-keep class me.yun.silk.** { *; }
+-keep class me.yun.silk.utils.** { *; }
+# Android Xml API 返回系统 XmlPullParser 实现，接口 ABI 不能重命名或收窄
+-keep class org.xmlpull.v1.** { *; }
+# Miuix Nav/Compose 从库字节码解析该 composition local
+-keep class androidx.lifecycle.viewmodel.compose.** { *; }
+# Hchat 反射访问的微信内部类字段名（R8 改名后反射取不到）
+-keepclassmembers class * {
+    java.lang.String e;
+    java.lang.String f;
+    java.lang.String h;
+    java.lang.String i;
+    java.lang.String m;
+    java.lang.String d;
+}

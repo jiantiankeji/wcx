@@ -28,6 +28,9 @@ import java.lang.reflect.Field
 )
 object HideSearch : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryListener {
 
+    /** 密友隐藏面：默认随主控生效（未单独设置过的用户默认开启，可在列表中单独关闭）。 */
+    override val defaultEnabled: Boolean = true
+
     private const val TAG = "HideSearch"
 
     /** `fts.logic.q0.p(FTSResult)` — SearchChatroomMemberTask（群聊内搜索成员）。 */
