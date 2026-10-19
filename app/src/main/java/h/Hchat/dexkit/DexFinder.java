@@ -295,9 +295,19 @@ public class DexFinder {
         openUnionLocatorResolved = false;
         networkQueueLocatorResolved = false;
         if (loadCache()) {
-            resolvedAll = true;
-            logDetail("命中缓存: " + shortKey(runtimeCacheKey));
-            return;
+            // 缓存命中不等于缓存完整：解析失败的锚点会以空串落盘，而 loadMethod 读到空串只返回 null、
+            // 不标记 descriptorInvalid，于是「某锚点永远为 null」会被固化，后续 resolveXxx 直接 return。
+            // 这里在采纳缓存前校验关键锚点，缺失或无效则就地补解析。
+            String missing = missingCriticalAnchors();
+            if (missing.isEmpty()) {
+                boolean repairVideo = !isSendVideoMethod(sendVideoMethod);
+                if (repairVideo) resolveSendVideoApi();
+                if (repairVideo) saveCache();
+                resolvedAll = true;
+                logDetail("命中缓存: " + shortKey(runtimeCacheKey));
+                return;
+            }
+            logDetail("缓存命中但关键锚点缺失(" + missing + ")，改为重新解析");
         }
         cacheDescriptorInvalid = false;
         resolveAddMsgClasses();
@@ -313,7 +323,11 @@ public class DexFinder {
         resolveSendXmlApi();
         resolveGroupSolitaireApi();
         resolveLocalMessageApi();
+        // 视频发送：旧版本走 CopyVideoTask（AsyncTask），8.0.79 起改走 SendMsgMgr 的 15 参实现。
+        // 这里必须两个都解析——之前只调了 Task 版本，导致 sendVideoMethod 一直是 null，
+        // 「完整性自检」永远报 interaction.media.video 缺失。
         resolveSendVideoTaskApi();
+        resolveSendVideoApi();
         resolveVideoPathApi();
         resolveVideoInfoApi();
         resolveSendVoiceApi();
@@ -1417,6 +1431,21 @@ public class DexFinder {
         }
     }
 
+    /** 缓存里必须存在、否则视为缓存不可用的关键锚点。 */
+    private String missingCriticalAnchors() {
+        StringBuilder sb = new StringBuilder();
+        if (sendTextMsgClass == null) appendMissing(sb, "sendTextMsg");
+        if (sendImageMethod == null) appendMissing(sb, "sendImage");
+        if (sendFileMethod == null) appendMissing(sb, "sendFile");
+        if (serviceGetterMethod == null) appendMissing(sb, "serviceGetter");
+        return sb.toString();
+    }
+
+    private void appendMissing(StringBuilder sb, String name) {
+        if (sb.length() > 0) sb.append(',');
+        sb.append(name);
+    }
+
     public void resolveSendVideoApi() {
         if (ensureSnapshotLoaded()) return;
         try {
@@ -1424,15 +1453,24 @@ public class DexFinder {
 
             List<MethodData> methods = dexKit.findMethod(
                     mkMethodUsingStrings("send vedio args error, toUser[%s] fileName[%s]"));
+            if (methods.isEmpty()) {
+                // 老版本微信的日志串没有后半段，保留回落。
+                methods = dexKit.findMethod(mkMethodUsingStrings("send vedio args error"));
+            }
+            Method best = null;
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
                     if (!isSendVideoMethod(method)) continue;
                     KavaReflector.accessible(method);
-                    sendVideoMethod = method;
-                    break;
+                    // 同时存在 13 参（老版）与 15 参（8.0.79 SendMsgMgr）时优先取参数更多的那个。
+                    if (best == null
+                            || method.getParameterTypes().length > best.getParameterTypes().length) {
+                        best = method;
+                    }
                 } catch (Throwable ignored) {}
             }
+            sendVideoMethod = best;
 
             logDetail("视频发送方法: " + methodName(sendVideoMethod));
         } catch (Throwable e) {
@@ -4216,16 +4254,16 @@ public class DexFinder {
         if (method == null || method.getReturnType() != void.class) return false;
         Class<?>[] params = method.getParameterTypes();
         if (params.length < 13) return false;
+        // 微信 8.0.79 把视频发送重构成协程链路，SendMsgMgr 的签名也随之漂移：
+        // 旧版第 7 位是 boolean、第 9 位是 String；新版第 7 位变成回调对象、第 9 位变成 boolean。
+        // 因此这里只锁定「Context + 3 个 String + 2 个 int」的形状，
+        // 唯一性由特征串 "send vedio args error, toUser[%s] fileName[%s]" 保证（见 resolveSendVideoApi）。
         return params[0] == Context.class
                 && params[1] == String.class
                 && params[2] == String.class
                 && params[3] == String.class
                 && (params[4] == int.class || params[4] == Integer.class)
-                && (params[5] == int.class || params[5] == Integer.class)
-                && (params[7] == boolean.class || params[7] == Boolean.class)
-                && (params[8] == boolean.class || params[8] == Boolean.class)
-                && params[9] == String.class
-                && params[10] == String.class;
+                && (params[5] == int.class || params[5] == Integer.class);
     }
 
     private boolean isEmojiSendMethod(Method method) {

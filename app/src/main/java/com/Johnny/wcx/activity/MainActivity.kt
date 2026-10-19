@@ -62,6 +62,8 @@ import com.composables.icons.materialsymbols.outlinedfilled.Warning
 import com.topjohnwu.superuser.Shell
 import com.Johnny.wcx.BuildConfig
 import com.Johnny.wcx.constants.PackageNames
+import com.Johnny.wcx.constants.Preferences
+import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.constants.WeChatVersions
 import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.DefaultColumn
@@ -165,17 +167,41 @@ class MainActivity : ComponentActivity() {
             val isHookEnabled = remember(xposedService) {
                 xposedService?.scope?.contains(PackageNames.WECHAT) == true
             }
+            // 框架服务（libxposed service）绑定只发生在模块进程，绑定失败不代表模块没注入。
+            // 微信进程内检测到 LSPosed 后会把 API 版本写进跨进程缓存，读它来区分
+            // 「本页连不上服务」与「模块根本没被加载」两种情况——原来一律显示「未检测到
+            // Xposed 框架」，模块其实在工作时会误导用户。
+            val cachedApiVersion = remember {
+                runCatching { WePrefs.getIntOrDef(Preferences.CACHED_LSP_API_VERSION, 0) }
+                    .getOrDefault(0)
+            }
 
-            return remember(isHookEnabled, xposedService) {
-                ActivationState(
-                    isActivated = isHookEnabled,
-                    title = if (isHookEnabled) "已激活" else "未激活",
-                    desc = xposedService?.let {
-                        "${it.frameworkName} ${it.frameworkVersion} " +
-                                "(${it.frameworkVersionCode}), API ${it.apiVersion}"
-                    } ?: "未检测到 Xposed 框架, 请确认已在管理器中启用模块并勾选微信",
-                    color = if (isHookEnabled) Color(0xFF4CAF50) else Color(0xFFF44336)
-                )
+            return remember(isHookEnabled, xposedService, cachedApiVersion) {
+                when {
+                    isHookEnabled -> ActivationState(
+                        isActivated = true,
+                        title = "已激活",
+                        desc = "${xposedService?.frameworkName} ${xposedService?.frameworkVersion} " +
+                                "(${xposedService?.frameworkVersionCode}), API ${xposedService?.apiVersion}",
+                        color = Color(0xFF4CAF50)
+                    )
+
+                    cachedApiVersion > 0 -> ActivationState(
+                        isActivated = true,
+                        title = "已注入",
+                        desc = "微信进程内已检测到 LSPosed API $cachedApiVersion；本页未能连接框架服务，" +
+                                "不影响微信内功能。若微信内功能异常，请确认作用域已勾选微信并重启微信。",
+                        color = Color(0xFFFB8C00)
+                    )
+
+                    else -> ActivationState(
+                        isActivated = false,
+                        title = "未激活",
+                        desc = "未检测到 Xposed 框架。请确认：① 模块已在管理器中启用 " +
+                                "② 作用域已勾选微信 ③ 安装或更新后重启微信",
+                        color = Color(0xFFF44336)
+                    )
+                }
             }
         }
 

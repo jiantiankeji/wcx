@@ -39,6 +39,9 @@ object AutoCacheImages : ClickableFeature(), WeDatabaseListenerApi.IInsertListen
     private var whitelist by WePrefs.prefOption("autocache_images_whitelist", emptySet())
     private var blacklist by WePrefs.prefOption("autocache_images_blacklist", emptySet())
 
+    /** 正在缓存中的 msgSvrId，避免同一张图被重复触发下载。 */
+    private val inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
     override fun onEnable() {
         WeDatabaseListenerApi.addListener(this)
     }
@@ -67,13 +70,20 @@ object AutoCacheImages : ClickableFeature(), WeDatabaseListenerApi.IInsertListen
         val msgSvrId = values.getAsLong("msgSvrId") ?: return
         if (msgSvrId == 0L) return
 
-        WeLogger.i(TAG, "detected image message; msgSvrId=$msgSvrId, auto caching")
+        // 高频 INFO 日志（每张图 2~3 条）会淹没真实报错，这里只留在 logcat，不落盘。
+        WeLogger.d(TAG, "detected image message; msgSvrId=$msgSvrId, auto caching")
+        // 同一条消息可能被数据库回调触发多次，去重避免重复触发原图下载。
+        if (!inFlight.add(msgSvrId)) return
         CoroutineScope(Dispatchers.IO).launch {
-            val path = WeMessageApi.cacheImage(msgSvrId)
-            if (path != null) {
-                WeLogger.i(TAG, "cached image to $path")
-            } else {
-                WeLogger.e(TAG, "failed to auto-cache image msgSvrId=$msgSvrId")
+            try {
+                val path = WeMessageApi.cacheImage(msgSvrId)
+                if (path != null) {
+                    WeLogger.d(TAG, "cached image to $path")
+                } else {
+                    WeLogger.w(TAG, "failed to auto-cache image msgSvrId=$msgSvrId")
+                }
+            } finally {
+                inFlight.remove(msgSvrId)
             }
         }
     }

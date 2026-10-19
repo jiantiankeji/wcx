@@ -905,6 +905,17 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     }.getOrNull()
 
     fun sendEmojiByMd5(toUser: String, md5: String): Boolean {
+        hchatMedia()?.let { media ->
+            val emojis = runCatching { media.emojis() }.getOrNull()
+            if (emojis != null && emojis.canSendSilently()) {
+                val ok = runCatching { emojis.sendByMd5(toUser, md5) }.getOrDefault(false)
+                if (ok) {
+                    WeLogger.i(TAG, "sent emoji via Hchat media api: $md5")
+                    return true
+                }
+                WeLogger.w(TAG, "Hchat media sendEmojiByMd5 returned false, falling back to legacy path")
+            }
+        }
         return runCatching {
             WeLogger.i(TAG, "sending registered emoji")
             val emojiInfo = WeServiceApi.getEmojiInfoByMd5(md5)
@@ -1000,6 +1011,21 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     }
 
     fun sendVideo(toUser: String, videoPath: String): Boolean {
+        if (runCatching { !java.io.File(videoPath).let { it.isFile && it.length() > 0 } }.getOrDefault(true)) {
+            WeLogger.w(TAG, "sendVideo skipped: mp4 missing/empty ($videoPath)")
+            return false
+        }
+        hchatMedia()?.let { media ->
+            val videos = runCatching { media.videos() }.getOrNull()
+            if (videos != null && videos.canSendSilently()) {
+                val ok = runCatching { videos.send(toUser, videoPath) }.getOrDefault(false)
+                if (ok) {
+                    WeLogger.i(TAG, "sent video via Hchat media api: $videoPath")
+                    return true
+                }
+                WeLogger.w(TAG, "Hchat media sendVideo returned false, falling back to legacy path")
+            }
+        }
         return try {
             WeLogger.i(TAG, "sending video: $videoPath to $toUser")
             val thread = classImportMultiVideo.clazz.createInstance(
@@ -1361,7 +1387,40 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             }.invokeStatic(msgInfo.instance)
     }
 
+    // -------------------------------------------------------------------------------------
+    // Hchat 侧发送能力桥接
+    //
+    // WCX 这套发送实现是按旧版微信写的，8.0.79 上语音/视频/表情/卡片各自失效在不同环节
+    // （语音是 VoiceLogic 定位、视频是 ImportMultiVideo、卡片是 AppMsgLogic 的特征串）。
+    // h.Hchat 的 media / message API 已按版本做过适配（v320 修过视频 service、v309 修过
+    // AppMsg 13 参、v308 修过消息构造器），这里统一「优先 Hchat、失败回退本类实现」，
+    // 避免同一能力两套逻辑各修一半。
+    // -------------------------------------------------------------------------------------
+
+    private fun hchatMedia(): h.Hchat.hooks.api.media.WeChatMediaApi? = runCatching {
+        h.Hchat.hooks.api.core.WeChatApis.media()?.takeIf { it.isAvailable }
+    }.getOrNull()
+
+    private fun hchatMessages(): h.Hchat.hooks.api.message.WeChatMessageApi? = runCatching {
+        h.Hchat.hooks.api.core.WeChatApis.messages()?.takeIf { it.isAvailable }
+    }.getOrNull()
+
     fun sendVoice(toUser: String, path: String, durationMs: Int): Boolean {
+        // 源文件不在就没有任何通道能发出去，先判掉，避免误报「发送成功」
+        if (runCatching { !java.io.File(path).let { it.isFile && it.length() > 0 } }.getOrDefault(true)) {
+            WeLogger.w(TAG, "sendVoice skipped: source file missing/empty ($path)")
+            return false
+        }
+        hchatMedia()?.let { media ->
+            if (media.canSendVoiceSilently()) {
+                val ok = runCatching { media.sendVoice(toUser, path, durationMs) }.getOrDefault(false)
+                if (ok) {
+                    WeLogger.i(TAG, "sent voice via Hchat media api: $path")
+                    return true
+                }
+                WeLogger.w(TAG, "Hchat media sendVoice returned false, falling back to legacy path")
+            }
+        }
         var succeeded = runCatching {
             // 准备文件
             val fileName = voiceNameGenMethod.invoke(getReceiverForMethod(voiceNameGenMethod), toUser, "amr_") as? String
@@ -1491,8 +1550,23 @@ object WeMessageApi : ApiFeature(), IResolveDex {
      *
      * [thumbData] 是封面图字节：微信正常转发卡片时会先下载封面再把字节交给发送逻辑，
      * 只把封面 URL 写进 XML 而这里传 null 的话，接收端卡片封面会显示空白。
+     *
+     * 通道选择：Hchat 的 `sendXml` 不接收封面字节，因此**只有不带封面时**才优先走它
+     * （8.0.79 上 AppMsgLogic 的 13 参重载更可靠）；带封面时直接走 WeAppMsgApi，
+     * 由它把 thumbData 一并交给发送逻辑。
      */
     fun sendXmlAppMsg(target: String, xmlContent: String, thumbData: ByteArray? = null): Boolean {
+        if (thumbData == null) {
+            // Hchat 侧 sendXml 走 AppMsgLogic 的 13 参重载（8.0.79 上 6 参那条已不可用）
+            hchatMessages()?.let { messages ->
+                val ok = runCatching { messages.sendXml(target, xmlContent) }.getOrDefault(false)
+                if (ok) {
+                    WeLogger.i(TAG, "sent appmsg via Hchat message api")
+                    return true
+                }
+                WeLogger.w(TAG, "Hchat message sendXml returned false, falling back to WeAppMsgApi")
+            }
+        }
         val appId = extractXmlAttr(xmlContent, "appid")
         val title = extractXmlTag(xmlContent, "title")
 
@@ -1893,7 +1967,12 @@ object WeMessageApi : ApiFeature(), IResolveDex {
      * 在真正写入文件字节 *之前* 就从 SERVERID:// 改写为最终文件名, 所以只能以磁盘上文件是否存在为准。
      */
     private fun ensureImageCachedFile(msgSvrId: Long): Path? {
-        val baseRow = queryImgInfoRow(msgSvrId) ?: return null
+        val baseRow = queryImgInfoRow(msgSvrId)
+        if (baseRow == null) {
+            // 查不到图片信息行：多数是消息未入库 / 表结构与当前微信版本不一致。
+            WeLogger.w(TAG, "cacheImage: image info row not found, msgSvrId=" + msgSvrId)
+            return null
+        }
 
         // 有原图行则优先下载原图, 否则退回基础行
         val targetRow = baseRow.hdImgId.takeIf { it > 0 }
@@ -1905,8 +1984,23 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         resolveExistingImageFile(targetRow)?.let { return it }
 
         // 触发 CDN 下载, 轮询直到文件真正落地。talker 用基础行的 (原图行可能未存 msgTalker)。
-        if (!triggerDownload(targetRow.localId, targetRow.talker.ifEmpty { baseRow.talker })) return null
-        return pollUntilImageFileExists(targetRow.localId)
+        if (!triggerDownload(targetRow.localId, targetRow.talker.ifEmpty { baseRow.talker })) {
+            WeLogger.w(
+                TAG,
+                "cacheImage: trigger download rejected, msgSvrId=" + msgSvrId +
+                    ", localId=" + targetRow.localId
+            )
+            return null
+        }
+        val cached = pollUntilImageFileExists(targetRow.localId)
+        if (cached == null) {
+            WeLogger.w(
+                TAG,
+                "cacheImage: download timeout, msgSvrId=" + msgSvrId +
+                    ", localId=" + targetRow.localId
+            )
+        }
+        return cached
     }
 
     /**
@@ -1956,7 +2050,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             }
 
             val result = m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, false)
-            WeLogger.i(TAG, "triggerDownload result=$result")
+            WeLogger.d(TAG, "triggerDownload result=$result")
             (result as? Int)?.let { it >= 0 } ?: false
         } catch (e: Exception) {
             WeLogger.e(TAG, "triggerDownload failed", e)

@@ -146,6 +146,14 @@ public final class WeChatDatabaseListenerApi {
     public synchronized void install() {
         if (!isAvailable()) return;
         Class<?> wrapperClass = dexFinder != null ? dexFinder.sqliteDbWrapperClass : null;
+        if (wrapperClass == null) {
+            // Hchat 侧特征在部分微信版本上解析不到 wrapper，回落到 WCX 侧解析结果。
+            wrapperClass = WcxDatabaseCompat.sqliteDbWrapperClass();
+            if (wrapperClass != null && dexFinder != null) {
+                dexFinder.sqliteDbWrapperClass = wrapperClass;
+                log("SqliteDB wrapper 类: 使用 WCX 侧解析结果兜底 -> " + wrapperClass.getName());
+            }
+        }
         if (isOperational()) return;
         if (wrapperClass != hookedWrapperClass) {
             hookedWrapperMutationMethods.clear();

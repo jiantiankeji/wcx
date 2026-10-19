@@ -699,7 +699,8 @@ public final class WeChatMessageApi {
     }
 
     public boolean canSendXml() {
-        return dexFinder != null && dexFinder.sendXmlAppMsgMethod != null;
+        return dexFinder != null && dexFinder.sendXmlAppMsgMethod != null
+                && dexFinder.appMsgParseMethod != null;
     }
 
     public boolean sendAt(String talker, String wxId, String text) {
@@ -787,32 +788,21 @@ public final class WeChatMessageApi {
                                      int messageType,
                                      int sendFlag,
                                      Object sourceArgs) throws Throwable {
-        // 微信 8.0.79+ 的发送文本构造器尾部多一个 msgSource(String) 参数（如 f61.s0）。
-        // 按实际构造器参数个数自适应传参，兼容 5 参（旧）与 6 参（新）。
         if (sourceArgs != null) {
             Constructor<?> objectCtor = dexFinder.sendTextMsgCtorObject;
             if (objectCtor != null) {
-                if (objectCtor.getParameterCount() >= 6) {
-                    return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs, null);
-                }
-                return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs);
+                return invokeMessageConstructor(objectCtor, talker, content, messageType, sendFlag, sourceArgs);
             }
         }
 
         Constructor<?> longCtor = dexFinder.sendTextMsgCtorLong;
         if (longCtor != null) {
-            if (longCtor.getParameterCount() >= 6) {
-                return KavaReflector.newInstance(longCtor, talker, content, messageType, sendFlag, 0L, null);
-            }
-            return KavaReflector.newInstance(longCtor, talker, content, messageType, sendFlag, 0L);
+            return invokeMessageConstructor(longCtor, talker, content, messageType, sendFlag, 0L);
         }
 
         Constructor<?> objectCtor = dexFinder.sendTextMsgCtorObject;
         if (objectCtor != null) {
-            if (objectCtor.getParameterCount() >= 6) {
-                return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs, null);
-            }
-            return KavaReflector.newInstance(objectCtor, talker, content, messageType, sendFlag, sourceArgs);
+            return invokeMessageConstructor(objectCtor, talker, content, messageType, sendFlag, sourceArgs);
         }
 
         return RedPacketReflector.newInstanceByArgs(
@@ -825,6 +815,15 @@ public final class WeChatMessageApi {
                         sourceArgs != null ? sourceArgs : 0L
                 }
         );
+    }
+
+    private Object invokeMessageConstructor(Constructor<?> ctor, String talker, String content,
+                                            int messageType, int sendFlag, Object sourceArgs) throws Throwable {
+        if (ctor.getParameterTypes().length == 6) {
+            // 8.0.79 adds a String; an empty value selects the host's default in both constructors.
+            return KavaReflector.newInstance(ctor, talker, content, messageType, sendFlag, sourceArgs, "");
+        }
+        return KavaReflector.newInstance(ctor, talker, content, messageType, sendFlag, sourceArgs);
     }
 
     private Object getPatExtensionInstance() {
@@ -970,10 +969,11 @@ public final class WeChatMessageApi {
 
         if (params.length == 10) {
             args[9] = 0L;
-        } else if (params.length == 12) {
+        } else if (params.length == 12 || params.length == 13) {
             args[9] = newMsgIdTalker(params[9], talker);
             args[10] = false;
             args[11] = "";
+            if (params.length == 13) args[12] = "";
         }
         return args;
     }

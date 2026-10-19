@@ -122,7 +122,8 @@ public final class WeChatDiagnosticsApi {
         addMissing(optional, "interaction.media.voice",
                 WeChatApis.media() != null && WeChatApis.media().voices().canSendSilently());
         addMissing(optional, "interaction.media.video",
-                WeChatApis.media() != null && WeChatApis.media().videos().canSendSilently());
+                WeChatApis.media() != null && WeChatApis.media().videos().canSendSilently(),
+                WeChatApis.media() != null ? WeChatApis.media().videos().diagnostic() : null);
         addMissing(optional, "interaction.chatPage.start",
                 dexFinder != null && dexFinder.chatPageStartMethod != null);
         addMissing(optional, "interaction.chatPage.fragmentEnter",
@@ -238,9 +239,15 @@ public final class WeChatDiagnosticsApi {
     }
 
     private void addMissing(StringBuilder sb, String name, boolean available) {
+        addMissing(sb, name, available, null);
+    }
+
+    /** [detail] 只在缺失时输出，用来直接说明卡在哪一步，免得只看一个名称还得去翻日志。 */
+    private void addMissing(StringBuilder sb, String name, boolean available, String detail) {
         if (available) return;
         if (sb.length() > 0) sb.append(',');
         sb.append(name);
+        if (detail != null && detail.length() > 0) sb.append('[').append(detail).append(']');
     }
 
     private String className(Class<?> clazz) {

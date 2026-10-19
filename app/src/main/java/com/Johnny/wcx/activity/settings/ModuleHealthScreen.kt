@@ -43,6 +43,9 @@ import com.Johnny.wcx.features.items.secret_friend.SecretFriendDiagnostics
 import com.Johnny.wcx.features.items.secret_friend.SecretFriendState
 import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.utils.android.showToast
+import com.Johnny.wcx.utils.crash.ExitReasonRecorder
+import com.Johnny.wcx.utils.MainThreadWatchdog
+import com.Johnny.wcx.utils.crash.ProcessTimeline
 import com.Johnny.wcx.BuildConfig
 import com.Johnny.wcx.utils.reflection.ClassLoaders
 import h.Hchat.hooks.api.core.WeChatApis
@@ -228,7 +231,8 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
                     OverviewHealthCard(
                         total = items.size,
                         pass = items.count { it.ok },
-                        fail = items.size - items.count { it.ok },
+                        fail = items.count { !it.ok && !it.inactive },
+                        off = items.count { !it.ok && it.inactive },
                         moduleVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                         wechatVersion = runCatching {
                             WeChatApis.version()?.current()?.displayVersion() ?: "未识别"
@@ -239,7 +243,8 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
                         onShowList = { kind ->
                             when (kind) {
                                 "pass" -> showFilteredList("通过项", items.filter { it.ok })
-                                "fail" -> showFilteredList("异常项", items.filter { !it.ok })
+                                "fail" -> showFilteredList("异常项", items.filter { !it.ok && !it.inactive })
+                                "off" -> showFilteredList("未启用项", items.filter { !it.ok && it.inactive })
                                 else -> showFilteredList("全部检测项", items)
                             }
                         },
@@ -375,6 +380,7 @@ private fun OverviewHealthCard(
     total: Int,
     pass: Int,
     fail: Int,
+    off: Int,
     moduleVersion: String,
     wechatVersion: String,
     internalVersion: String,
@@ -389,10 +395,14 @@ private fun OverviewHealthCard(
     val chipBg = Color(0xFFF1F5F9)
     val muted = Color(0xFF6B7280)
     val title = Color(0xFF1F2937)
-    val allOk = fail == 0 && total > 0
-    val statusTitle = if (total == 0) "尚未检测" else if (allOk) "适配检查完成" else "存在缺失项"
-    val statusColor = if (total == 0) muted else if (allOk) Color(0xFF1F2937) else Color(0xFFD93025)
-    val todo = 0
+    // 只有真故障才叫「异常」；单纯没开启的功能归入「未启用」，不影响整体判定。
+    val noFail = fail == 0 && total > 0
+    val statusTitle = when {
+        total == 0 -> "尚未检测"
+        fail > 0 -> "存在缺失项"
+        else -> "适配检查完成"
+    }
+    val statusColor = if (total == 0) muted else if (noFail) Color(0xFF1F2937) else Color(0xFFD93025)
 
     Box(
         modifier = Modifier
@@ -427,12 +437,12 @@ private fun OverviewHealthCard(
             Spacer(Modifier.height(6.dp))
             // 状态行
             Text(
-                text = if (total == 0) {
-                    "尚未扫描，点击下方按钮立即开始。"
-                } else if (allOk) {
-                    "已检查 $total / $total 项，本轮全部通过。"
-                } else {
-                    "已检查 $total / $total 项，通过 $pass，异常 $fail。"
+                text = when {
+                    total == 0 -> "尚未扫描，点击下方按钮立即开始。"
+                    noFail -> "已检查 $total / $total 项，通过 $pass，无异常" +
+                        if (off > 0) "（另有 $off 项未启用）" else "。"
+                    else -> "已检查 $total / $total 项，通过 $pass，异常 $fail" +
+                        if (off > 0) "，未启用 $off。" else "。"
                 },
                 fontSize = 14.sp,
                 color = muted,
@@ -456,7 +466,7 @@ private fun OverviewHealthCard(
                 StatCell("耗时", formatDuration(scanDurationMs), chipBg, title, muted, Modifier.weight(1f).padding(end = 6.dp))
                 StatCell("通过", pass.toString(), chipBg, title, muted, Modifier.weight(1f).padding(horizontal = 3.dp), onClick = { onShowList("pass") })
                 StatCell("异常", fail.toString(), chipBg, title, muted, Modifier.weight(1f).padding(horizontal = 3.dp), onClick = { onShowList("fail") })
-                StatCell("待验证", todo.toString(), chipBg, title, muted, Modifier.weight(1f).padding(start = 6.dp), onClick = { onShowList("all") })
+                StatCell("未启用", off.toString(), chipBg, title, muted, Modifier.weight(1f).padding(start = 6.dp), onClick = { onShowList("off") })
             }
             Spacer(Modifier.height(12.dp))
             // 提示语
@@ -551,6 +561,11 @@ private data class HealthItem(
     val detail: String,
     val actionLabel: String? = null,
     val action: (() -> String)? = null,
+    /**
+     * 该功能只是「未启用」，并非故障：不计入异常统计，界面也不标红。
+     * 例如密友总开关关闭、插件总开关关闭、一个插件都没启用。
+     */
+    val inactive: Boolean = false,
 )
 
 /** 一个检测/修复步骤：产出一批 [HealthItem]。 */
@@ -575,21 +590,47 @@ private fun HealthRow(item: HealthItem, onOpenDetail: () -> Unit) {
         Text(
             text = item.value,
             fontSize = 12.sp,
-            color = if (item.ok) BasicComponentDefaults.summaryColor().color else Color(0xFFD93025),
+            color = when {
+                item.ok -> BasicComponentDefaults.summaryColor().color
+                item.inactive -> Color(0xFFB26A00)
+                else -> Color(0xFFD93025)
+            },
             modifier = Modifier.fillMaxWidth(),
         )
     }
 }
 
+/** 报告上限：避免出现「一万字」粘贴不完的情况。 */
+private const val MAX_REPORT_CHARS = 3000
+
 private fun showReportDialog(context: Context, title: String, items: List<HealthItem>) {
     val okCount = items.count { it.ok }
+    val failItems = items.filter { !it.ok && !it.inactive }
+    val offItems = items.filter { !it.ok && it.inactive }
     val sb = StringBuilder()
-    sb.append("共 ").append(items.size).append(" 项，通过 ").append(okCount)
-        .append("，问题 ").append(items.size - okCount).append("。\n\n")
-    items.forEach { item ->
-        sb.append(if (item.ok) "✅ " else "❌ ").append(item.label).append("：").append(item.value).append('\n')
+    sb.append("共 ").append(items.size).append(" 项：通过 ").append(okCount)
+        .append("，异常 ").append(failItems.size).append("，未启用 ").append(offItems.size).append("。\n\n")
+    if (failItems.isNotEmpty()) {
+        sb.append("【异常】需要处理\n")
+        failItems.forEach { item ->
+            sb.append("❌ ").append(item.label).append('：').append(item.value).append('\n')
+        }
+        sb.append('\n')
     }
-    val body = sb.toString()
+    if (offItems.isNotEmpty()) {
+        sb.append("【未启用】不是故障\n")
+        offItems.forEach { item ->
+            sb.append("○ ").append(item.label).append('：').append(item.value).append('\n')
+        }
+        sb.append('\n')
+    }
+    if (failItems.isEmpty() && offItems.isEmpty()) {
+        sb.append("全部通过。\n")
+    }
+    var body = sb.toString()
+    if (body.length > MAX_REPORT_CHARS) {
+        body = body.take(MAX_REPORT_CHARS) + "\n…（报告过长已截断，可在列表里逐项查看）"
+    }
     runCatching {
         AlertDialog.Builder(context)
             .setTitle(title)
@@ -617,7 +658,63 @@ private fun moduleHealthSteps(context: Context): List<HealthStep> = listOf(
     HealthStep("Hook 安装任务与就绪阶段") { hookTasks() },
     HealthStep("关键类锚点") { anchors() },
     HealthStep("密友功能") { secretFriendSection() },
+    HealthStep("退出原因与主线程卡顿") { lastExitItems(context) },
 )
+
+/**
+ * 「上次进程退出原因」——用来区分是系统内存回收、崩溃、ANR 还是用户强行停止。
+ * 这段信息是判断「模块有没有主动杀微信」的直接依据。
+ */
+private fun lastExitItems(context: Context): List<HealthItem> {
+    val out = mutableListOf<HealthItem>()
+
+    val summary = runCatching { ExitReasonRecorder.summary(context) }.getOrNull()
+    val diagnosis = runCatching { ExitReasonRecorder.diagnosis(context) }.getOrNull()
+    out += HealthItem(
+        "上次进程退出",
+        "运行状态",
+        summary ?: "无记录（需 Android 11 及以上）",
+        true,
+        diagnosis ?: ("Android 11 起系统会记录进程退出原因（内存不足回收 / Java 或原生崩溃 / ANR / 强行停止）。\n" +
+            "当前还没有可用记录：可能是首次安装、系统版本过低，或系统未保留记录。"),
+    )
+
+    val starts = runCatching { ProcessTimeline.todayStartCount(context) }.getOrDefault(0)
+    val pss = runCatching { ProcessTimeline.currentPssMb(context) }.getOrDefault(0)
+    out += HealthItem(
+        "主进程启动次数",
+        "运行状态",
+        if (starts > 0) "今日 " + starts + " 次" else "无记录",
+        true,
+        "每次微信进程启动会记 1 次。\n" +
+            "若明显多于你手动打开微信的次数，说明进程在后台被反复杀掉或被系统反复拉起。\n" +
+            "当前进程内存（PSS）：" + (if (pss > 0) pss.toString() + "MB" else "未知"),
+    )
+
+    val recent = runCatching { ProcessTimeline.recent(context, 5) }.getOrDefault(emptyList())
+    if (recent.isNotEmpty()) {
+        out += HealthItem(
+            "最近启动记录",
+            "运行状态",
+            recent.first(),
+            true,
+            recent.joinToString("\n"),
+        )
+    }
+
+    // 主线程卡顿：ANR 的直接来源，记录卡住时主线程在跑谁。
+    val janks = runCatching { MainThreadWatchdog.recent(context) }.getOrDefault(emptyList())
+    if (janks.isNotEmpty()) {
+        out += HealthItem(
+            "主线程卡顿",
+            "运行状态",
+            janks.first(),
+            true,
+            "主线程单条消息超过 2 秒即记录（ANR 阈值为 5 秒）：\n" + janks.joinToString("\n"),
+        )
+    }
+    return out
+}
 
 /** 「一键修复」动作（重建引导链路），供多处复用。 */
 private fun repairAction(context: Context): Pair<String, () -> String> =
@@ -736,6 +833,7 @@ private fun scriptRuntime(context: Context): List<HealthItem> {
         else "插件总开关未开启，所有脚本插件都不会工作。",
         actionLabel = if (globalOn) null else openSwitch.first,
         action = if (globalOn) null else openSwitch.second,
+        inactive = !globalOn,
     )
 
     val hookCount = runCatching { HookRegistry.get().size() }.getOrDefault(0)
@@ -766,6 +864,7 @@ private fun scriptRuntime(context: Context): List<HealthItem> {
             enabledPlugins == 0 -> "已安装 ${plugins.size} 个插件，但一个都没启用——请在「脚本」页逐个开启。"
             else -> "已安装 ${plugins.size} 个插件，已启用 $enabledPlugins 个。"
         },
+        inactive = enabledPlugins == 0,
     )
 
     val loadErrors = collectPluginLoadErrors(context)
@@ -870,6 +969,7 @@ private fun secretFriendSection(): List<HealthItem> {
         "密友功能的总开关（在「密友功能」分类页顶部）。关闭后所有隐藏/拦截都不生效，名单保留。",
         actionLabel = if (master) null else "开启总开关",
         action = if (master) null else openMaster,
+        inactive = !master,
     )
     val count = SecretFriendState.getStoredWxIds().size
     out += HealthItem(
@@ -880,6 +980,7 @@ private fun secretFriendSection(): List<HealthItem> {
     out += HealthItem(
         "密友临时解除", section, if (temp) "生效中" else "未激活", !temp,
         "临时解除期间，名单内所有人对你可见。当前：${if (temp) "生效中" else "未激活"}。",
+        inactive = temp,
     )
     val faces = runCatching {
         SecretFriendDiagnostics.collectDetailRows().filter { it.section == "各隐藏面" }
@@ -894,6 +995,7 @@ private fun secretFriendSection(): List<HealthItem> {
             runCatching { WeConversationApi.reloadConversations() }
             if (a) "已按当前名单重新对账并刷新会话列表" else "对账失败"
         },
+        inactive = !master,
     )
     return out
 }

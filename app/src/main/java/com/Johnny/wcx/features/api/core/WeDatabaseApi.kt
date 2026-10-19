@@ -69,6 +69,22 @@ object WeDatabaseApi : ApiFeature(), IResolveDex {
 
     val isReady: Boolean get() = ::db.isInitialized
 
+    // ==== 供 h.Hchat 脚本子系统兜底使用 ====
+    // Hchat 侧在微信 8.0.79 上 resolveDatabaseApi() 解析不到 CoreStorage / SqliteDB wrapper，
+    // 导致脚本数据库、消息变更监听整体不可用。这里复用 WCX 侧已验证的解析结果作为兜底。
+
+    /** MMKernel 上的 CoreStorage 实例；解析失败返回 null。 */
+    @JvmStatic
+    fun hchatCoreStorage(): Any? = runCatching { coreStorage }.getOrNull()
+
+    /** 微信 SqliteDB wrapper 类；解析失败返回 null。 */
+    @JvmStatic
+    fun hchatSqliteDbWrapperClass(): Class<*>? = runCatching { classSqliteDbWrapper.clazz }.getOrNull()
+
+    /** 已初始化的 SQLiteDatabase；未就绪返回 null。 */
+    @JvmStatic
+    fun hchatDatabase(): SQLiteDatabase? = if (::db.isInitialized) db else null
+
     private const val TAG = "WeDatabaseApi"
 
     val coreStorage by lazy {

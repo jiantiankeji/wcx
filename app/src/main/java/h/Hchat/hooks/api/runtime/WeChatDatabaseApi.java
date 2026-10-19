@@ -798,6 +798,13 @@ public final class WeChatDatabaseApi {
             storage = resolveStorageByReturnType(expected);
         }
         if (storage == null) {
+            // Hchat 侧取库方法在部分微信版本上返回空，回落到 WCX 侧解析结果。
+            storage = WcxDatabaseCompat.coreStorage();
+            if (storage != null) {
+                log("获取 CoreStorage: 使用 WCX 侧解析结果兜底成功");
+            }
+        }
+        if (storage == null) {
             log("获取 CoreStorage 失败: 取库方法未返回对象");
             return null;
         }

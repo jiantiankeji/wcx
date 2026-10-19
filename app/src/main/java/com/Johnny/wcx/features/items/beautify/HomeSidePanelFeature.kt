@@ -645,6 +645,7 @@ private fun isVisibleTree(v: View): Boolean {
 @Volatile private var lastDiagHomeKey = ""
 private val listDiagSet = java.util.Collections.synchronizedSet(java.util.HashSet<String>())
 private fun diagIsHome(act: Activity, fragCls: String?, isHome: Boolean, visible: Boolean?) {
+    if (!BuildConfig.DEBUG) return
     val key = "${act.javaClass.name}|$fragCls|$isHome|$visible"
     if (key == lastDiagHomeKey) return
     lastDiagHomeKey = key
@@ -661,6 +662,7 @@ private fun diagIsHome(act: Activity, fragCls: String?, isHome: Boolean, visible
  *  每个 Tab 的顶栏（搜索/+ 栏等）结构不同，据此识别「微信」Tab 以控制侧边栏入口显隐。 */
 private val topBarDiagSet = java.util.Collections.synchronizedSet(java.util.HashSet<String>())
 private fun diagFile(msg: String) {
+    if (!BuildConfig.DEBUG) return
     runCatching {
         val f = java.io.File("/sdcard/Android/data/com.tencent.mm/WCX/diag.log")
         f.parentFile?.mkdirs()
@@ -668,6 +670,7 @@ private fun diagFile(msg: String) {
     }
 }
 private fun dumpTopBar(act: Activity) {
+    if (!BuildConfig.DEBUG) return
     if (topBarDiagSet.size > 40) return
     try {
         val decor = act.window.decorView
@@ -699,6 +702,7 @@ private fun dumpTopBar(act: Activity) {
 /** 诊断：LauncherUI 非 androidx FragmentActivity 时，dump 继承链与 fragment 反射信息（限频一次） */
 @Volatile private var launcherDiagDone = false
 private fun dumpLauncherDiagnostics(act: Activity) {
+    if (!BuildConfig.DEBUG) return
     if (launcherDiagDone) return
     launcherDiagDone = true
     runCatching {
