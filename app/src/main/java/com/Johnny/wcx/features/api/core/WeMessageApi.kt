@@ -1280,6 +1280,49 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         }.getOrElse { "✗ 未解析（${it.javaClass.simpleName}: ${it.message}）" }
     }
 
+    /**
+     * 发送相关组件是否已定位完成。
+     *
+     * DexKit 的委托在解析前 descriptor 为空，解析失败会写成 LauncherUI 占位；
+     * 两种都算「未就绪」。微信冷启动后模块在后台扫 dex，这期间点复读/转发
+     * 一定会失败一次，看起来像功能坏了。
+     */
+    fun isSendReady(): Boolean = runCatching {
+        val cls = classNetSceneSendMsg
+        val sendObj = methodGetSendMsgObject
+        val post = methodPostToQueue
+        cls.getDescriptorString() != null && !cls.isPlaceholder &&
+                sendObj.getDescriptorString() != null && !sendObj.isPlaceholder &&
+                post.getDescriptorString() != null && !post.isPlaceholder
+    }.getOrDefault(false)
+
+    /**
+     * 等待发送组件就绪，最多 [timeoutMs] 毫秒。
+     *
+     * 只应在后台线程调用（复读/转发都在 Dispatchers.IO 里）。
+     * 返回 false 表示等超时，调用方应提示「正在准备，请稍后重试」
+     * 而不是笼统的失败。
+     */
+    fun awaitSendReady(timeoutMs: Long = 8_000L): Boolean {
+        if (isSendReady()) return true
+        WeLogger.i(TAG, "send components not ready yet, waiting up to ${timeoutMs}ms")
+        val deadline = android.os.SystemClock.uptimeMillis() + timeoutMs
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            try {
+                Thread.sleep(120)
+            } catch (ie: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+            if (isSendReady()) {
+                WeLogger.i(TAG, "send components ready after waiting")
+                return true
+            }
+        }
+        WeLogger.w(TAG, "send components still not ready after ${timeoutMs}ms")
+        return false
+    }
+
     fun sendText(toUser: String, text: String): Boolean {
         return try {
             WeLogger.i(TAG, "sending text message: $text")

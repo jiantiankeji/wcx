@@ -163,13 +163,11 @@ fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit)
     var updateInfo by remember { mutableStateOf<UpdateResult.UpdateAvailable?>(null) }
     var updateError by remember { mutableStateOf<String?>(null) }
     var showChangelog by remember { mutableStateOf(false) }
-    var showDonate by remember { mutableStateOf(false) }
 
     ClearConfigDialog(show = showClearConfirm, onDismiss = { showClearConfirm = false })
     UpdateAvailableDialog(info = updateInfo, onDismiss = { updateInfo = null }, context = context)
     UpdateErrorDialog(message = updateError, onDismiss = { updateError = null })
     ChangelogDialog(show = showChangelog, onDismiss = { showChangelog = false }, context = context)
-    DonateDialog(show = showDonate, onDismiss = { showDonate = false }, context = context)
 
     MiuixListScaffold(title = "设置") {
         // Account info card — shown at top of Settings tab.
@@ -314,12 +312,6 @@ fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit)
                     title = "提示",
                     summary = "牙膏要一点一点挤, 显卡要一刀一刀切, PPT 要一张一张放, 代码要一行一行写, 单个功能预计自出现在 commit 之日起, 三年内开发完毕",
                     icon = MaterialSymbols.Outlined.Lightbulb_2,
-                )
-                PrefArrow(
-                    title = "捐赠",
-                    summary = "支持项目开发 (模块完全开源免费, 捐赠无特权)",
-                    icon = MaterialSymbols.Outlined.Volunteer_activism,
-                    onClick = { showDonate = true },
                 )
                 PrefArrow(
                     title = "开放源代码许可",
@@ -1003,48 +995,6 @@ private fun MiuixMessageDialog(
     }
 }
 
-
-@Composable
-private fun DonateDialog(show: Boolean, onDismiss: () -> Unit, context: Context) {
-    WindowDialog(show = show, title = "捐赠支持", onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-        ) {
-
-            Card(modifier = Modifier.fillMaxWidth(), onClick = {
-                "https://ifdian.net/a/Johnny520".toUri().openInSystem(context, true)
-            }) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFFE85D04)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(text = "爱", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(text = "爱发电", fontWeight = FontWeight.SemiBold, color = MiuixTheme.colorScheme.onSurface)
-                            Text(text = "点击跳转至爱发电页面", fontSize = 12.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            TextButton(
-                text = "关闭",
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 //  Open-source license screen

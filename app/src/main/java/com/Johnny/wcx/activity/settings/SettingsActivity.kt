@@ -145,8 +145,6 @@ class SettingsActivity : ComponentActivity() {
 //  Feature categories (name -> icon)
 // ---------------------------------------------------------------------------
 
-// 「密友功能」分类刻意放在列表**最后**（隐蔽入口，不显眼）。
-// 设置页搜索会显式排除该分类（见 FeaturesPager），避免随便搜一个词就把密友功能暴露出来。
 val FEATURE_CATEGORIES = listOf(
     "聊天" to MaterialSymbols.Outlined.Chat,
     "联系人与群组" to MaterialSymbols.Outlined.Contacts,
@@ -167,6 +165,7 @@ val FEATURE_CATEGORIES = listOf(
     "批量操作" to MaterialSymbols.Outlined.Checklist,
     "首页右上角菜单" to MaterialSymbols.Outlined.Add_circle,
     "联系人详情页面" to MaterialSymbols.Outlined.Contact_page,
+    // 「密友功能」刻意放在列表**最后**（隐蔽入口，不显眼）；搜索页会排除该分类。
     "密友功能" to MaterialSymbols.Outlined.Contacts,
 )
 
@@ -184,7 +183,7 @@ private sealed interface SettingsNavTarget {
     data object ScriptManager : SettingsNavTarget
     data object ScriptDiagnostics : SettingsNavTarget
     data object ScriptFaq : SettingsNavTarget
-    data object SecretFriendDiagnostics : SettingsNavTarget
+    data object HiddenContactsDiagnostics : SettingsNavTarget
     data object ModuleHealth : SettingsNavTarget
 }
 
@@ -208,7 +207,7 @@ private fun SettingsRoot(onFinish: () -> Unit) {
             is SettingsNavTarget.Category -> CategoryDetailScreen(
                 categoryName = screen.name,
                 onBack = pop,
-                onOpenSecretFriendDiagnostics = { push(SettingsNavTarget.SecretFriendDiagnostics) },
+                onOpenHiddenContactsDiagnostics = { push(SettingsNavTarget.HiddenContactsDiagnostics) },
             )
 
             SettingsNavTarget.License -> LicenseScreen(
@@ -227,7 +226,7 @@ private fun SettingsRoot(onFinish: () -> Unit) {
 
             SettingsNavTarget.ScriptFaq -> ScriptFaqScreen(onBack = pop)
 
-            SettingsNavTarget.SecretFriendDiagnostics -> SecretFriendDiagnosticsScreen(onBack = pop)
+            SettingsNavTarget.HiddenContactsDiagnostics -> HiddenContactsDiagnosticsScreen(onBack = pop)
 
             SettingsNavTarget.ModuleHealth -> ModuleHealthScreen(onBack = pop)
         }

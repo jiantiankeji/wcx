@@ -24,7 +24,6 @@ import com.Johnny.wcx.features.core.FeaturesProvider
 import com.Johnny.wcx.features.core.SwitchFeature
 import com.Johnny.wcx.features.items.easter_egg.AprilFools
 import com.Johnny.wcx.features.items.easter_egg.isAprilFools
-import com.Johnny.wcx.features.items.secret_friend.SecretFriendManager
 import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.utils.android.showToastSuspend
 import kotlinx.coroutines.CoroutineScope
@@ -60,8 +59,8 @@ fun FeaturesPager(onOpenCategory: (String) -> Unit) {
     val query = queryState.text.toString()
     val searching = query.isNotBlank()
 
-    // 设置页搜索**显式排除密友功能**：避免输入任意关键词（如"隐藏"）就把密友功能暴露出来。
-    // 密友入口 = 设置分类列表最后一项；分类详情页仍按 categories 正常显示全部密友开关。
+    // 设置页搜索**显式排除「密友功能」分类**：避免随便搜一个词就把密友入口暴露出来。
+    // 密友入口固定在分类列表最后一项；直接进入分类仍可看到其中的开关。
     val searchableItems = remember {
         FeaturesProvider.ALL_HOOK_ITEMS
             .filterIsInstance<SwitchFeature>()
@@ -197,7 +196,7 @@ fun FeaturesPager(onOpenCategory: (String) -> Unit) {
 fun CategoryDetailScreen(
     categoryName: String,
     onBack: () -> Unit,
-    onOpenSecretFriendDiagnostics: () -> Unit,
+    onOpenHiddenContactsDiagnostics: () -> Unit,
 ) {
     val items = remember(categoryName) {
         FeaturesProvider.ALL_HOOK_ITEMS.filter { categoryName in it.categories }
@@ -208,23 +207,17 @@ fun CategoryDetailScreen(
         }
     }
 
-    val isSecretFriendCategory = categoryName == SwitchFeature.SECRET_FRIEND_CATEGORY
+    val isMasterSwitchCategory = categoryName == SwitchFeature.CATEGORY_WITH_MASTER_SWITCH
     var masterEnabled by remember(categoryName) {
-        mutableStateOf(Preferences.secretFriendMasterEnabled)
+        mutableStateOf(Preferences.hiddenContactsMasterEnabled)
     }
 
     // 总开关：切换后立即对该分类下所有开关生效（各功能自身开关状态保留）。
     fun applyMasterSwitch(next: Boolean) {
         masterEnabled = next
-        Preferences.secretFriendMasterEnabled = next
+        Preferences.hiddenContactsMasterEnabled = next
         items.filterIsInstance<SwitchFeature>().forEach { feature ->
-            // 「密友名单管理」是密友名单编辑入口（无独立开关），直接跟随总开关；
-            // 其余功能按各自原有开关状态恢复。
-            feature.isEnabled = if (feature.name == SecretFriendManager.name) {
-                next
-            } else {
-                next && WePrefs.getBoolOrFalse(feature.name)
-            }
+            feature.isEnabled = next && WePrefs.getBoolOrFalse(feature.name)
         }
         switchStates.keys.forEach { key ->
             switchStates[key] = next && WePrefs.getBoolOrFalse(key)
@@ -245,7 +238,7 @@ fun CategoryDetailScreen(
     ) {
         if (items.isEmpty()) return@MiuixListScaffold
 
-        if (isSecretFriendCategory) {
+        if (isMasterSwitchCategory) {
             item {
                 Column(
                     modifier = Modifier
@@ -277,7 +270,7 @@ fun CategoryDetailScreen(
             }
         }
 
-        if (isSecretFriendCategory) {
+        if (isMasterSwitchCategory) {
             item {
                 Card(
                     modifier = Modifier
@@ -287,7 +280,7 @@ fun CategoryDetailScreen(
                     ArrowPreference(
                         title = "密友功能诊断",
                         startAction = {},
-                        onClick = { onOpenSecretFriendDiagnostics() },
+                        onClick = { onOpenHiddenContactsDiagnostics() },
                     )
                 }
             }

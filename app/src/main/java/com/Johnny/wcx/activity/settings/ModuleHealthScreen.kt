@@ -38,9 +38,7 @@ import com.Johnny.wcx.constants.Preferences
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.core.FeaturesProvider
 import com.Johnny.wcx.features.hchat.HchatScriptBootstrap
-import com.Johnny.wcx.features.items.secret_friend.HideConversations
-import com.Johnny.wcx.features.items.secret_friend.SecretFriendDiagnostics
-import com.Johnny.wcx.features.items.secret_friend.SecretFriendState
+import com.Johnny.wcx.features.items.contacts.HideContacts
 import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.utils.android.showToast
 import com.Johnny.wcx.utils.crash.ExitReasonRecorder
@@ -76,7 +74,7 @@ import java.util.Locale
  * 模块自检（最外层 / 全量）：把整个模块的公共依赖逐项扫描出来，并支持手动「一键自检」与「一键修复」。
  *
  * 覆盖：各功能分类启用概况 / 微信公共 API 层（含完整性自检）/ 脚本运行时全链路 /
- * Hook 安装任务逐项 / 关键类锚点 / 密友功能状态。
+ * Hook 安装任务逐项 / 关键类锚点 / 隐藏联系人状态。
  *
  * 每一项都可点开：弹出「状态 + 含义 + 恢复建议」，可修复的项还带一个**动作按钮**
  * （如待重试的 Hook 任务可直接「重试安装」、未解析的微信 API 可「一键修复」）。
@@ -278,11 +276,11 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "一键自检与修复") }
                 item {
                     SettingsCard {
-                        ActionRow("一键自检", "逐项扫描全部公共依赖（微信 API / 脚本 / Hook 任务 / 锚点 / 密友），带进度条") {
+                        ActionRow("一键自检", "逐项扫描全部公共依赖（微信 API / 脚本 / Hook 任务 / 锚点 / 隐藏联系人），带进度条") {
                             launchRun("一键自检", { moduleHealthSteps(context) }, showOverlay = true, reportTitle = "模块自检结果", replaceItems = true)
                         }
                         InsetDivider()
-                        ActionRow("一键修复", "补脚本目录 / 开总开关 / 重建引导链路 / 推进阶段 / 重排 Hook / 重载插件 / 密友对账；修复后自动重新自检刷新列表") {
+                        ActionRow("一键修复", "补脚本目录 / 开总开关 / 重建引导链路 / 推进阶段 / 重排 Hook / 重载插件 / 隐藏联系人刷新；修复后自动重新自检刷新列表") {
                             launchRun("一键修复", { moduleRepairSteps(context) }, showOverlay = true, reportTitle = "一键修复结果", replaceItems = false, afterRun = { rescan() })
                         }
                         InsetDivider()
@@ -304,7 +302,7 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
                 item { DiagnosticLogCard(context) }
                 item {
                     Text(
-                        text = "说明：本页是「全量自检」——覆盖微信公共 API、脚本运行时、Hook 安装任务、关键类锚点、密友状态与各分类启用情况。" +
+                        text = "说明：本页是「全量自检」——覆盖微信公共 API、脚本运行时、Hook 安装任务、关键类锚点、隐藏联系人状态与各分类启用情况。" +
                             "标红或标 ❌ 的项通常就是对应功能失效的原因；点开可看含义、恢复建议与可直接执行的动作。",
                         fontSize = 12.sp,
                         color = BasicComponentDefaults.summaryColor().color,
@@ -563,7 +561,7 @@ private data class HealthItem(
     val action: (() -> String)? = null,
     /**
      * 该功能只是「未启用」，并非故障：不计入异常统计，界面也不标红。
-     * 例如密友总开关关闭、插件总开关关闭、一个插件都没启用。
+     * 例如隐藏联系人开关关闭、插件总开关关闭、一个插件都没启用。
      */
     val inactive: Boolean = false,
 )
@@ -657,7 +655,7 @@ private fun moduleHealthSteps(context: Context): List<HealthStep> = listOf(
     HealthStep("脚本运行时") { scriptRuntime(context) },
     HealthStep("Hook 安装任务与就绪阶段") { hookTasks() },
     HealthStep("关键类锚点") { anchors() },
-    HealthStep("密友功能") { secretFriendSection() },
+    HealthStep("隐藏联系人") { hiddenContactsSection() },
     HealthStep("退出原因与主线程卡顿") { lastExitItems(context) },
 )
 
@@ -956,46 +954,43 @@ private fun anchorItem(name: String, className: String): HealthItem {
     )
 }
 
-private fun secretFriendSection(): List<HealthItem> {
-    val section = "密友功能"
+private fun hiddenContactsSection(): List<HealthItem> {
+    val section = "隐藏联系人"
     val out = mutableListOf<HealthItem>()
-    val master = SecretFriendState.isSecretFriendMasterOn()
-    val openMaster: () -> String = {
-        runCatching { Preferences.secretFriendMasterEnabled = true }
-        "密友功能总开关已开启；若名单为空请到「密友名单管理」添加密友"
+    val master = runCatching { HideContacts.isEnabled }.getOrDefault(false)
+    val turnOn: () -> String = {
+        runCatching { HideContacts.enable() }
+        "隐藏联系人已启用；若名单为空请到「联系人与群组 → 隐藏联系人 → 配置隐藏列表」添加"
     }
     out += HealthItem(
-        "密友总开关", section, if (master) "开启" else "关闭", master,
-        "密友功能的总开关（在「密友功能」分类页顶部）。关闭后所有隐藏/拦截都不生效，名单保留。",
-        actionLabel = if (master) null else "开启总开关",
-        action = if (master) null else openMaster,
+        "隐藏联系人开关", section, if (master) "开启" else "关闭", master,
+        "隐藏联系人在「联系人与群组」分类下。关闭后所有隐藏与拦截都不生效，名单保留。",
+        actionLabel = if (master) null else "启用",
+        action = if (master) null else turnOn,
         inactive = !master,
     )
-    val count = SecretFriendState.getStoredWxIds().size
+    val count = runCatching { HideContacts.hiddenContacts.size }.getOrDefault(0)
     out += HealthItem(
-        "密友名单人数", section, "$count", true,
-        "当前密友名单共 $count 人。为 0 时不会有任何隐藏效果，请到「密友名单管理」添加密友。",
+        "名单人数", section, "$count", true,
+        "当前名单共 $count 人。为 0 时不会有任何隐藏效果，请到「配置隐藏列表」添加。",
     )
-    val temp = SecretFriendState.isTemporarilyShown()
+    val temp = runCatching { HideContacts.isTemporarilyShown }.getOrDefault(false)
     out += HealthItem(
-        "密友临时解除", section, if (temp) "生效中" else "未激活", !temp,
-        "临时解除期间，名单内所有人对你可见。当前：${if (temp) "生效中" else "未激活"}。",
+        "临时显示", section, if (temp) "生效中" else "未激活", !temp,
+        "临时显示期间，名单内所有人对你可见（#show 或三击标题触发、#hide 恢复）。",
         inactive = temp,
     )
-    val faces = runCatching {
-        SecretFriendDiagnostics.collectDetailRows().filter { it.section == "各隐藏面" }
-    }.getOrDefault(emptyList())
-    val onFaces = faces.count { it.ok }
+    val blockChat = runCatching { HideContacts.surfaceOn(HideContacts.SURFACE_BLOCK_CHAT) }.getOrDefault(false)
     out += HealthItem(
-        "密友隐藏面生效", section, "$onFaces/${faces.size}", master && onFaces == faces.size,
-        "13 个隐藏面里当前有 $onFaces 个处于「生效」状态。\n未生效的多为开关未开或总开关关闭；到「密友功能诊断」页可逐面查看。",
-        actionLabel = "重新对账",
-        action = {
-            val a = runCatching { HideConversations.reconcileOnListChange() }.isSuccess
-            runCatching { WeConversationApi.reloadConversations() }
-            if (a) "已按当前名单重新对账并刷新会话列表" else "对账失败"
-        },
-        inactive = !master,
+        "禁止进入聊天", section, if (blockChat) "开启" else "关闭", true,
+        "开启后点开名单内联系人的聊天页会立即退出；临时显示期间放行。",
+        inactive = !blockChat,
+    )
+    val blockProfile = runCatching { HideContacts.surfaceOn(HideContacts.SURFACE_BLOCK_PROFILE) }.getOrDefault(false)
+    out += HealthItem(
+        "禁止查看资料", section, if (blockProfile) "开启" else "关闭", true,
+        "开启后点开名单内联系人的资料页会立即退出；临时显示期间放行。",
+        inactive = !blockProfile,
     )
     return out
 }
@@ -1064,14 +1059,13 @@ private fun moduleRepairSteps(context: Context): List<HealthStep> = listOf(
             HealthItem("已启用插件", "重新加载全部已启用插件", "已重载 $ok/${enabled.size} 个", true, "重新加载了所有已启用的脚本插件。")
         )
     },
-    HealthStep("密友隐藏面重新对账") {
-        val ok1 = runCatching { HideConversations.reconcileOnListChange() }.isSuccess
-        val ok2 = runCatching { WeConversationApi.reloadConversations() }.isSuccess
+    HealthStep("隐藏联系人刷新") {
+        val ok = runCatching { WeConversationApi.reloadConversations() }.isSuccess
         listOf(
             HealthItem(
-                "密友名单", "密友隐藏面重新对账",
-                "对账=${if (ok1) "成功" else "失败"}，刷新会话=${if (ok2) "成功" else "失败"}", ok1,
-                "按当前密友名单重新隐藏/恢复会话行，并刷新会话列表。",
+                "隐藏联系人", "刷新会话列表",
+                if (ok) "成功" else "失败", ok,
+                "按当前名单重新过滤会话列表（名单本身不改动）。",
             )
         )
     },

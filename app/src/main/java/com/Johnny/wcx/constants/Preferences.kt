@@ -11,7 +11,7 @@ object Preferences {
     const val MATCH_GENERIC_WXID_EXP = "match_generic_wxid"
 
     /** 「密友功能」分类总开关：关闭时该分类下所有功能都不加载（各功能自身开关状态保留）。 */
-    const val SECRET_FRIEND_MASTER_ENABLED = "secret_friend_master_enabled"
+    const val HIDDEN_CONTACTS_MASTER_ENABLED = "hidden_contacts_master_enabled"
 
     // Settings UI theming
     const val THEME_MODE = "settings_theme_mode"
@@ -35,7 +35,7 @@ object Preferences {
     var matchGenericWxIdExp by prefOption(MATCH_GENERIC_WXID_EXP, true)
 
     // 「密友功能」分类总开关（默认开启）
-    var secretFriendMasterEnabled by prefOption(SECRET_FRIEND_MASTER_ENABLED, true)
+    var hiddenContactsMasterEnabled by prefOption(HIDDEN_CONTACTS_MASTER_ENABLED, true)
 
     // use this when Google fucked up itself again
 //    var useActivityInsteadOfDialog: Boolean

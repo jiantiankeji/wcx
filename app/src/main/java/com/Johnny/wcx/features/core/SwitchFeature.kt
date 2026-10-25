@@ -9,8 +9,8 @@ import com.Johnny.wcx.utils.WeLogger
 abstract class SwitchFeature : BaseFeature() {
 
     companion object {
-        /** 带分类总开关的分类名（见 [Preferences.secretFriendMasterEnabled]）。 */
-        const val SECRET_FRIEND_CATEGORY = "密友功能"
+        /** 带分类总开关的分类名（见 [Preferences.hiddenContactsMasterEnabled]）。 */
+        const val CATEGORY_WITH_MASTER_SWITCH = "密友功能"
     }
 
     /** Default state when the user has never toggled this feature. */
@@ -27,7 +27,7 @@ abstract class SwitchFeature : BaseFeature() {
     final override fun startup() {
         if (!shouldLoadInCurrentProcess) return
         // 「密友功能」分类有总开关：关掉总开关时整个分类都不加载（各功能自身开关状态保留）。
-        if (SECRET_FRIEND_CATEGORY in categories && !Preferences.secretFriendMasterEnabled) return
+        if (CATEGORY_WITH_MASTER_SWITCH in categories && !Preferences.hiddenContactsMasterEnabled) return
         _isEnabled = WePrefs.getBoolOrDef(name, defaultEnabled)
         if (shouldEnableOnStartup) enable()
     }

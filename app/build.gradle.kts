@@ -46,8 +46,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // 版本号单一数据源：CI（.github/workflows/ci.yml）直接读取此处，
         // 发版时只需在此递增 versionCode / versionName
-        versionCode = 330
-        versionName = "v330"
+        versionCode = 343
+        versionName = "v343"
 
         buildConfigField("String", "COMMIT_HASH", "\"${gitHash}\"")
         buildConfigField("String", "TAG", "\"WCX\"")
@@ -318,7 +318,9 @@ dependencies {
     implementation("io.github.billywei01:fastkv:3.0.1")
     implementation("com.google.flatbuffers:flatbuffers-java:23.5.26")
     implementation("dev.rikka.ndk.thirdparty:cxx:1.2.0")
-    implementation("com.github.REAndroid:ARSCLib:V1.3.8")
+    // 内置 ARSCLib：JitPack 在该构件上经常 30s+ 才响应，CI 里会直接判成 Could not find。
+    // 该库无传递依赖（POM 只有自身坐标），内置后构建可复现。升级时手动替换 jar 即可。
+    implementation(files("libs/ARSCLib-V1.3.8.jar"))
     implementation("io.github.skylot:jadx-dex-input:1.5.5") {
         exclude(group = "com.google.guava", module = "guava")
     }
@@ -333,7 +335,9 @@ dependencies {
 
     implementation(project(":libs:common:bsh"))
 
-    compileOnly(libs.legacyxposed.api)
+    // 内置 Xposed API 82：Maven Central / 腾讯镜像都没有该构件，只能从 api.xposed.info 拉，
+    // 而该源在 CI 上偶发超时会导致整个 master 构建失败（缓存丢失时必现）。内置后构建可复现。
+    compileOnly(files("libs/xposed-api-82.jar"))
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service)
     implementation(libs.dexkit)

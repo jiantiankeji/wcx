@@ -43,7 +43,7 @@ object WeDatabaseListenerApi : ApiFeature() {
 
     /**
      * 最近一次 `insertWithOnConflict` 的数据库实例（insert hook 时捕获）。
-     * 供需要写库的调用方复用（如密友会话行重建时取 wcdb SQLiteDatabase 实例）。
+     * 供需要写库的调用方复用（如会话行重建时取 wcdb SQLiteDatabase 实例）。
      */
     @Volatile
     var lastInsertDb: SQLiteDatabase? = null
@@ -81,7 +81,7 @@ object WeDatabaseListenerApi : ApiFeature() {
 
     override fun onEnable() {
         // 逐步隔离：任一步骤解析失败都不应让整个「数据库监听服务」装挂失败
-        // （否则所有依赖 IQueryListener 的功能——如密友通讯录/标签/搜索隐藏——会一并失效）
+        // （否则所有依赖 IQueryListener 的功能——如隐藏联系人的通讯录/标签/搜索过滤——会一并失效）
         runCatching { hookDatabaseInsert() }.onFailure { WeLogger.e(TAG, "hookDatabaseInsert failed", it) }
         runCatching { hookDatabaseUpdate() }.onFailure { WeLogger.e(TAG, "hookDatabaseUpdate failed", it) }
         runCatching { hookDatabaseQuery() }.onFailure { WeLogger.e(TAG, "hookDatabaseQuery failed", it) }

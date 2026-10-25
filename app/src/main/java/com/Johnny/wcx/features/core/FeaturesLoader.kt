@@ -52,7 +52,11 @@ object FeaturesLoader {
                     return@forEach
                 }
 
-                feature.startup()
+                // 单个 feature 启动失败绝不能中断整轮加载：之前没有隔离，任何一个 feature
+                // 在 startup() 里抛异常，排在它后面的功能（含各类 API 服务）就全都不会启动，
+                // 表现成「开关是开的但功能没反应」。
+                runCatching { feature.startup() }
+                    .onFailure { WeLogger.e(TAG, "startup failed for ${feature.displayName}", it) }
             }
         }
         WeLogger.i(TAG, "enabling all hook items took $elapsed")

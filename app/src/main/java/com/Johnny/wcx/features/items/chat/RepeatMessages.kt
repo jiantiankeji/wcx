@@ -73,6 +73,11 @@ object RepeatMessages : SwitchFeature(), WeChatMessageContextMenuApi.IMenuItemsP
      */
     @Suppress("DEPRECATION")
     fun repeatMessageWithReason(msgInfo: MessageInfo): String? {
+        // 微信刚启动时模块还在后台扫 dex，发送组件没定位好，这时复读必然失败一次。
+        // 先等一小会儿（最多 8 秒），比直接甩一句「复读失败」有用。
+        if (!WeMessageApi.awaitSendReady()) {
+            return "模块正在解析微信（发送组件未就绪），请稍后重试"
+        }
         return runCatching {
             when (msgInfo.type) {
                 MessageType.TEXT ->

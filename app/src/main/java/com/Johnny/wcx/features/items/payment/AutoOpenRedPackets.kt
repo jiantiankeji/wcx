@@ -230,10 +230,20 @@ object AutoOpenRedPackets : ClickableFeature(), WeDatabaseListenerApi.IInsertLis
                 )
             }
 
+            // 自动回复：支持 $amount / $sender / $chat 三个占位符。
+            //
+            // 注意 Kotlin 字符串转义：字面的 "$amount" 必须写成 "\$amount"，
+            // 写成 "\\$amount" 会被解析成「反斜杠 + amount 变量的值」，
+            // 导致 replace 永远匹配不到用户填的占位符（历史 bug：回复内容原样带着 $amount 发出去）。
             val reply = packetAutoReply
             if (reply.isNotBlank()) {
                 try {
-                    WeMessageApi.sendText(info.talker, reply.replace("\$amount", "¥$displayAmount"))
+                    val chatName = runCatching { WeDatabaseApi.getDisplayName(info.talker) }.getOrDefault("")
+                    val text = reply
+                        .replace("\$amount", "¥$displayAmount")
+                        .replace("\$sender", info.nickName)
+                        .replace("\$chat", chatName)
+                    WeMessageApi.sendText(info.talker, text)
                     WeLogger.i(TAG, "sent red packet auto-reply to ${info.talker}")
                 } catch (e: Throwable) {
                     // 自动回复失败不能中断抢红包成功处理或通知逻辑。
@@ -554,7 +564,7 @@ object AutoOpenRedPackets : ClickableFeature(), WeDatabaseListenerApi.IInsertLis
                         TextField(
                             value = autoReplyInput,
                             onValueChange = { autoReplyInput = it.trim() },
-                            label = { Text("抢到后自动回复 (留空禁用)") },
+                            label = { Text("抢到后自动回复 (留空禁用，可用 \$amount / \$sender / \$chat)") },
                             supportingText = { Text("成功抢到红包后向来源对话发送自定义消息\n(使用占位符 \$amount 表示金额)") },
                             singleLine = true,
                         )

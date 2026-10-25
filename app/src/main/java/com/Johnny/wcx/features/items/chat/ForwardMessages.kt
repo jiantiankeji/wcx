@@ -95,6 +95,12 @@ object ForwardMessages : SwitchFeature(),
 
     private fun forwardMessages(msgInfos: List<MessageInfo>, wxIds: Set<String>) {
         CoroutineScope(Dispatchers.IO).launch {
+            // 同复读：微信刚启动时发送组件还没定位好，先等一下再发，
+            // 而不是让用户看到一次莫名其妙的「转发失败」。
+            if (!WeMessageApi.awaitSendReady()) {
+                showToastSuspend("模块正在解析微信（发送组件未就绪），请稍后重试")
+                return@launch
+            }
             val total = msgInfos.size * wxIds.size
             showToastSuspend("正在转发 ${msgInfos.size} 条消息到 ${wxIds.size} 个对象...")
 
