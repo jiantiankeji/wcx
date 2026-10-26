@@ -38,6 +38,15 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.function.Consumer
 import java.util.function.Function
 
+/**
+ * 对话框关闭后延迟清理回调的时长。
+ *
+ * showChoices / showTextInput / showConfirm 都是「先 close()，再 post 回调」，
+ * 关闭瞬间 onDismiss 会执行；若立即 clear，随后的 onSelected / onConfirm
+ * 会因回调已被清空而永远丢失（表现为点选项/确定没反应）。
+ */
+private const val DIALOG_CALLBACK_CLEAR_DELAY_MS = 5_000L
+
 class ScriptPluginBridge internal constructor(
     val hostContext: Context,
     val classLoader: ClassLoader,
@@ -864,7 +873,10 @@ class ScriptPluginBridge internal constructor(
     }
 
     private fun clearDialogCallback(callback: Consumer<*>?) {
-        (callback as? DialogCallbackGate<*>)?.clear()
+        val gate = callback as? DialogCallbackGate<*> ?: return
+        // 不能在关闭时立即清空：回调是在 close() 之后 post 到下一帧执行的。
+        // 延迟清理既能保证 onSelected/onConfirm 收到，也能在用户取消时回收。
+        mainHandler.postDelayed({ gate.clear() }, DIALOG_CALLBACK_CLEAR_DELAY_MS)
     }
 
     private fun <T> trackDialogCallback(pluginId: String?, callback: Consumer<T>?): Consumer<T>? {
