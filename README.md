@@ -8,6 +8,15 @@
 
 ---
 
+## 📚 文档导航
+
+- [完整文档](docs/README.md)：安装、配置、模块设置、开发、FAQ
+- [功能目录](docs/SUMMARY.md)：按分类列出全部功能与单篇说明
+- [功能分类索引](docs/README.md#功能分类索引)：聊天/美化/联系人/朋友圈/支付/系统等 20 个分类入口
+- [脚本插件合集](plugins/README.md)：server_notify / aliyun_agent_reply / moments_export / group_welcome
+- [去混淆工具](deobf/README.md)：unidbg 解密与反混淆流水线
+- [开发指南](docs/development.md) / [常见问题](docs/faq.md)
+
 ## ✨ 功能总览
 
 | 分类 | 数量 | 代表功能 |

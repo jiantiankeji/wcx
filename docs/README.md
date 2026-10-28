@@ -51,6 +51,40 @@ WCX 是一个功能丰富的微信 Xposed 模块, 提供大量微信增强功能
 - [❓ 常见问题](faq.md)
 - [🛠 开发指南](development.md)
 
+## 功能分类索引
+
+功能明细和开关说明见 [功能目录](SUMMARY.md)；下面是各分类的入口：
+
+| 分类 | 说明 | 文档 |
+| --- | --- | --- |
+| 批量操作 | 批量删除/打标签/免打扰、群发、导出聊天记录 | [features/batch](features/batch/README.md) |
+| 界面美化 | 主题、气泡、侧边栏、导航栏、模糊与动画 | [features/beautify](features/beautify/README.md) |
+| 聊天 | 防撤回、自动回复、定时发送、消息过滤、合并消息等 | [features/chat](features/chat/README.md) |
+| 聊天输入栏菜单 | 输入栏「+」面板与菜单扩展 | [features/chat_input_bar_menu](features/chat_input_bar_menu/README.md) |
+| 联系人与群组 | 隐藏联系人、单向删除检测、群成员、退群监控 | [features/contacts](features/contacts/README.md) |
+| 调试 | 调试选项与诊断入口 | [features/debug](features/debug/README.md) |
+| 彩蛋 | 隐藏彩蛋功能 | [features/easter_egg](features/easter_egg/README.md) |
+| 娱乐 | 娱乐类小功能 | [features/entertain](features/entertain/README.md) |
+| 首页右上角菜单 | 首页「+」菜单扩展 | [features/home_screen_menu](features/home_screen_menu/README.md) |
+| 小程序 | 小程序相关增强 | [features/miniapps](features/miniapps/README.md) |
+| 朋友圈 | 防撤回、自动点赞、导出、广告拦截 | [features/moments](features/moments/README.md) |
+| 通知 | 通知与提醒增强 | [features/notifications](features/notifications/README.md) |
+| 公众号 | 公众号文章与菜单增强 | [features/official_accounts](features/official_accounts/README.md) |
+| 红包与支付 | 自动抢红包、指纹支付、转账接收 | [features/payment](features/payment/README.md) |
+| 个人资料 | 「我」页面与资料卡 | [features/profile](features/profile/README.md) |
+| Java 脚本 | Java 脚本插件 API 与示例 | [features/scripting_java](features/scripting_java/README.md) |
+| JS 脚本 | JavaScript 脚本插件 API 与示例 | [features/scripting_js](features/scripting_js/README.md) |
+| 视频号 | 视频号相关增强 | [features/shortvideos](features/shortvideos/README.md) |
+| 系统与隐私 | 环境伪装、反检测、定位、缓存、权限 | [features/system](features/system/README.md) |
+| 音视频通话 | 通话界面与虚拟视频 | [features/voip](features/voip/README.md) |
+
+## 脚本插件与工具
+
+| 文档 | 说明 |
+| --- | --- |
+| [脚本插件合集](../plugins/README.md) | server_notify / aliyun_agent_reply / moments_export / group_welcome 的安装、配置与协议 |
+| [去混淆工具](../deobf/README.md) | unidbg 解密与反混淆流水线（独立 GPL-3.0 子项目） |
+
 ## 与上游 [WeKit](https://github.com/Ujhhgtg/WeKit) 的关系
 
 本项目基于 WeKit 二次开发，并在此基础上做了大量调整：
