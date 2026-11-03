@@ -189,8 +189,8 @@ fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit)
             MiuixSmallTitle(text = "微信主题", modifier = Modifier.padding(top = 12.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
                 PrefArrow(
-                    title = "主题商城",
-                    summary = "六款卡通主题一键应用：全局沉浸壁纸（主页/设置/朋友圈等全部页面）+ 对应主题气泡，支持透明度调节与备份/恢复",
+                    title = "主题工坊",
+                    summary = "内置 6 款全局主题，全局沉浸壁纸（主页/通讯录/发现/我的 4 个界面，或全部界面）+ 对应气泡，支持透明度调节与备份恢复",
                     icon = MaterialSymbols.Outlined.Palette,
                     onClick = { com.Johnny.wcx.features.items.beautify.ThemeStore.onClick(context) },
                 )
@@ -345,22 +345,51 @@ fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit)
 //  Profile card — account info at the top of the Settings tab
 // ---------------------------------------------------------------------------
 
+/**
+ * 查找微信本地头像缓存文件。
+ *
+ * 微信把头像缓存在 `<dataDir>/MicroMsg/avatar/` 下：每个账号一个目录，
+ * 目录名与文件名均为 md5(username)，文件名形如 `user_<md5>.png`。
+ * 命中就直接交给 Coil 加载本地文件，避免每次进设置页都走网络。
+ */
+private fun findLocalAvatar(wxid: String): java.io.File? {
+    val dataDir = runCatching { HostInfo.application.applicationInfo.dataDir }.getOrNull() ?: return null
+    val root = java.io.File(dataDir, "MicroMsg/avatar")
+    if (!root.isDirectory) return null
+    val md5 = runCatching {
+        java.security.MessageDigest.getInstance("MD5")
+            .digest(wxid.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }.getOrNull() ?: return null
+    java.io.File(root, "$md5/user_$md5.png").takeIf { it.isFile }?.let { return it }
+    val dir = java.io.File(root, md5)
+    if (dir.isDirectory) {
+        dir.listFiles { f -> f.isFile && f.name.endsWith(".png", ignoreCase = true) }
+            ?.maxByOrNull { it.lastModified() }
+            ?.let { return it }
+    }
+    return null
+}
+
 @Composable
 private fun ProfileCard() {
     val wxId = remember { WeApi.selfWxId }
 
     // WeChat identity — loaded once from the local DB; doesn't change mid-session.
-    data class WechatIdentity(val nickname: String, val avatarUrl: String)
+    /** [avatar] 是 Coil 的 model：优先本地微信头像缓存文件，取不到才回落到网络 URL。 */
+    data class WechatIdentity(val nickname: String, val avatar: Any?)
 
-    val identity by produceState(WechatIdentity("", "")) {
+    val identity by produceState(WechatIdentity("", null)) {
         withContext(Dispatchers.IO) {
             val db = com.Johnny.wcx.features.api.core.WeDatabaseApi
             val nickname = if (db.isReady) {
                 db.getSelfProfileField(com.Johnny.wcx.features.api.core.models.SelfProfileField.NAME, "")
                     ?.toString().orEmpty()
             } else ""
-            val avatarUrl = if (db.isReady && wxId.isNotEmpty()) db.getAvatarUrl(wxId) else ""
-            value = WechatIdentity(nickname, avatarUrl)
+            // 优先本地缓存：进设置页拉网络头像既慢又可能失败（弱网时卡片一片空白）。
+            val local = if (wxId.isNotEmpty()) findLocalAvatar(wxId) else null
+            val remote = if (local == null && db.isReady && wxId.isNotEmpty()) db.getAvatarUrl(wxId) else ""
+            value = WechatIdentity(nickname, local ?: remote.takeIf { it.isNotEmpty() })
         }
     }
 
@@ -371,9 +400,9 @@ private fun ProfileCard() {
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (identity.avatarUrl.isNotEmpty()) {
+            if (identity.avatar != null) {
                 AsyncImage(
-                    model = identity.avatarUrl,
+                    model = identity.avatar,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -780,28 +809,164 @@ private fun ClearConfigDialog(show: Boolean, onDismiss: () -> Unit) {
     )
 }
 
+/** 更新日志的一行：分类标签 + 描述。 */
+private data class ChangelogEntry(val label: String, val text: String)
+
+/**
+ * 把 GitHub Release 的 Markdown 正文解析成「标签 + 描述」列表。
+ * 标签按关键词归类（修复 / 新增 / 优化 / 移除 / 变更），识别不出时归入「变更」。
+ */
+private fun parseChangelog(raw: String?): List<ChangelogEntry> =
+    raw.orEmpty()
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") && !it.startsWith("```") }
+        .map { line ->
+            val text = line.trimStart('-', '*', '•', ' ').trim()
+            val label = when {
+                text.contains("修复") || text.contains("解决") || text.contains("fix", true) -> "修复"
+                text.contains("新增") || text.contains("添加") || text.contains("支持") ||
+                    text.contains("feat", true) -> "新增"
+                text.contains("优化") || text.contains("改进") || text.contains("提升") ||
+                    text.contains("perf", true) -> "优化"
+                text.contains("移除") || text.contains("删除") -> "移除"
+                else -> "变更"
+            }
+            ChangelogEntry(label, text)
+        }
+        .filter { it.text.isNotBlank() }
+        .take(40)
+        .toList()
+
 @Composable
 private fun UpdateAvailableDialog(
     info: UpdateResult.UpdateAvailable?,
     onDismiss: () -> Unit,
     context: Context,
 ) {
-    MiuixConfirmDialog(
-        show = info != null,
-        title = "检测到新版本",
-        message = if (info != null) {
-            "当前版本: ${BuildConfig.VERSION_NAME}\n新版本: ${info.info.versionName}\n是否下载并安装?"
-        } else "",
-        confirmText = "确定",
-        onDismiss = onDismiss,
-        onConfirm = {
-            val target = info ?: return@MiuixConfirmDialog
-            onDismiss()
-            CoroutineScope(Dispatchers.Default).launch {
-                AppUpdater.downloadAndInstall(context, target.info)
+    WindowDialog(show = info != null, title = "发现新版本", onDismissRequest = onDismiss) {
+        val target = info ?: return@WindowDialog
+        val entries = remember(target) { parseChangelog(target.info.changelog) }
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = target.info.versionName,
+                    fontSize = 30.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "当前 ${BuildConfig.VERSION_NAME}",
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(bottom = 5.dp),
+                )
             }
-        },
-    )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.12f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "完整包",
+                        fontSize = 11.sp,
+                        color = MiuixTheme.colorScheme.primary,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "GitHub 下载后覆盖安装，不会丢数据",
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            if (entries.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    text = "本次更新内容",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(6.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    entries.forEach { entry ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = entry.label,
+                                    fontSize = 10.sp,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = entry.text,
+                                fontSize = 12.sp,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            TextButton(
+                text = "立即更新",
+                onClick = {
+                    onDismiss()
+                    CoroutineScope(Dispatchers.Default).launch {
+                        AppUpdater.downloadAndInstall(context, target.info)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+            Spacer(Modifier.height(6.dp))
+            TextButton(
+                text = "以后再说",
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                text = "下载遇到困难？点击前往 GitHub Releases",
+                fontSize = 11.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    "https://github.com/Johnny520/wcx/releases".toUri()
+                                )
+                            )
+                        }
+                    }
+                    .padding(vertical = 8.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -1245,58 +1410,6 @@ fun AcknowledgementsScreen(onBack: () -> Unit) {
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         textDecoration = TextDecoration.Underline,
                     )
-                }
-            }
-        }
-
-        item {
-            Spacer(Modifier.height(12.dp))
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "本模块的脚本功能（脚本插件运行时、在线插件市场、脚本 Agent 等）实现来源于 Hchat 项目，在此致谢。",
-                        fontSize = 14.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        lineHeight = 22.sp,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                runCatching {
-                                    val intent = Intent(
-                                        Intent.ACTION_VIEW,
-                                        "https://github.com/ljh520134/Hchat-alt-entry".toUri()
-                                    )
-                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    context.startActivity(intent)
-                                }.onFailure {
-                                    WeLogger.e("Settings", "failed to open Hchat url", it)
-                                }
-                            },
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            text = "Hchat",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MiuixTheme.colorScheme.primary,
-                        )
-                        Text(
-                            text = ":",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                        Text(
-                            text = "https://github.com/ljh520134/Hchat-alt-entry",
-                            fontSize = 13.sp,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            textDecoration = TextDecoration.Underline,
-                        )
-                    }
                 }
             }
         }

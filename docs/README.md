@@ -78,11 +78,10 @@ WCX 是一个功能丰富的微信 Xposed 模块, 提供大量微信增强功能
 | 系统与隐私 | 环境伪装、反检测、定位、缓存、权限 | [features/system](features/system/README.md) |
 | 音视频通话 | 通话界面与虚拟视频 | [features/voip](features/voip/README.md) |
 
-## 脚本插件与工具
+## 工具
 
 | 文档 | 说明 |
 | --- | --- |
-| [脚本插件合集](../plugins/README.md) | server_notify / aliyun_agent_reply / moments_export / group_welcome 的安装、配置与协议 |
 | [去混淆工具](../deobf/README.md) | unidbg 解密与反混淆流水线（独立 GPL-3.0 子项目） |
 
 ## 与上游 [WeKit](https://github.com/Ujhhgtg/WeKit) 的关系
